@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "222244516460",
+    "project_id": "nava-drummer",
+    "storage_bucket": "nava-drummer.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:222244516460:android:1f0306463f56b62d971e49",
+        "android_client_info": {
+          "package_name": "com.navadrummer"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDqDwtRgsItumpm4Kmr2txcjPdgABpbZ0Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

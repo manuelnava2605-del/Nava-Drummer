@@ -1,0 +1,24 @@
+// NavaDrummer — Firebase Storage Rules
+// Deploy: firebase deploy --only storage
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── MIDI files (public read, admin write) ────────────────────────────────
+    match /midi/{songId} {
+      allow read:  if request.auth != null; // authenticated users only
+      allow write: if false; // admin SDK only
+    }
+
+    // ── User avatars ─────────────────────────────────────────────────────────
+    match /avatars/{userId}/{filename} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && request.resource.size  < 2 * 1024 * 1024  // 2MB limit
+                   && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

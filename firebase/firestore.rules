@@ -1,0 +1,82 @@
+// NavaDrummer — Firestore Security Rules
+// Deploy: firebase deploy --only firestore:rules
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper Functions ────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidProgress() {
+      let p = request.resource.data;
+      return p.totalXp      is int  && p.totalXp      >= 0
+          && p.level         is int  && p.level         >= 1
+          && p.currentStreak is int  && p.currentStreak >= 0
+          && p.maxStreak     is int  && p.maxStreak     >= 0;
+    }
+
+    function isValidSession() {
+      let s = request.resource.data;
+      return s.userId          is string
+          && s.songId           is string
+          && s.totalScore       is int    && s.totalScore       >= 0
+          && s.accuracyPercent  is float  && s.accuracyPercent  >= 0
+                                          && s.accuracyPercent  <= 100
+          && s.letterGrade      in ['S','A','B','C','D'];
+    }
+
+    // ── users/{userId} ──────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read:   if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+      allow delete: if false; // no deletion
+    }
+
+    // ── progress/{userId} ───────────────────────────────────────────────────
+    match /progress/{userId} {
+      allow read:   if isOwner(userId);
+      allow create: if isOwner(userId) && isValidProgress();
+      allow update: if isOwner(userId) && isValidProgress();
+      allow delete: if false;
+    }
+
+    // ── sessions/{sessionId} ────────────────────────────────────────────────
+    match /sessions/{sessionId} {
+      // Read own sessions
+      allow read:   if isAuthenticated()
+                    && resource.data.userId == request.auth.uid;
+
+      // Create — user can only write their own session
+      allow create: if isAuthenticated()
+                    && request.resource.data.userId == request.auth.uid
+                    && isValidSession();
+
+      // No updates / deletes on historical sessions
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ── songs/{songId} ──────────────────────────────────────────────────────
+    // Songs are public (read) but only admins can write (handled via Admin SDK)
+    match /songs/{songId} {
+      allow read:   if true;
+      allow write:  if false;
+    }
+
+    // ── leaderboard/{songId}/scores/{userId} ────────────────────────────────
+    match /leaderboard/{songId}/scores/{userId} {
+      allow read:   if isAuthenticated();
+      allow write:  if isOwner(userId);
+    }
+  }
+}

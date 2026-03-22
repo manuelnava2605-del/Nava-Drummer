@@ -1,0 +1,14 @@
+# NavaDrummer — Android Signing Configuration
+# 
+# 1. Generate keystore:
+#    keytool -genkey -v -keystore navadrummer.jks \
+#            -keyalg RSA -keysize 2048 -validity 10000 \
+#            -alias navadrummer
+#
+# 2. Copy this file to android/key.properties (not key.properties.template)
+# 3. Fill in your values:
+
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=navadrummer
+storeFile=../navadrummer.jks

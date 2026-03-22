@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NavaDrummer — Panel Admin</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.0/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.0/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.0/firebase-firestore-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.0/firebase-storage-compat.min.js"></script>
+<style>
+  :root {
+    --bg:      #07090F;
+    --surface: #0F1420;
+    --card:    #141926;
+    --border:  #1E2A3A;
+    --cyan:    #00F5FF;
+    --magenta: #FF006E;
+    --gold:    #FFD60A;
+    --green:   #39FF14;
+    --purple:  #BF5AF2;
+    --text:    #E8EAF0;
+    --muted:   #5A6A80;
+    --font:    'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--font); font-size: 13px;
+    min-height: 100vh;
+  }
+
+  /* ── Auth Screen ── */
+  #auth-screen {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; flex-direction: column; gap: 24px;
+  }
+  .logo {
+    font-size: 28px; letter-spacing: 4px; font-weight: 700;
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .auth-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 40px; width: 380px;
+    box-shadow: 0 0 40px rgba(0,245,255,0.08);
+  }
+  .auth-card h2 { font-size: 15px; letter-spacing: 3px; color: var(--muted); margin-bottom: 28px; }
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .field label { font-size: 10px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; }
+  input {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font); font-size: 13px;
+    padding: 10px 14px; border-radius: 8px; outline: none;
+    transition: border-color 0.2s;
+  }
+  input:focus { border-color: var(--cyan); }
+  .btn {
+    width: 100%; padding: 12px; border: none; border-radius: 8px;
+    font-family: var(--font); font-size: 12px; letter-spacing: 2px;
+    font-weight: 700; cursor: pointer; transition: all 0.2s; margin-top: 8px;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    color: #000;
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,245,255,0.3); }
+  .btn-danger { background: var(--magenta); color: white; }
+  .btn-sm {
+    width: auto; padding: 6px 14px; font-size: 10px;
+    background: var(--surface); color: var(--cyan);
+    border: 1px solid var(--cyan); border-radius: 6px;
+  }
+  .btn-sm:hover { background: rgba(0,245,255,0.1); }
+
+  /* ── Main Layout ── */
+  #main-screen { display: none; }
+  .topbar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 14px 32px; display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .topbar-logo { font-size: 16px; letter-spacing: 3px; font-weight: 700; color: var(--cyan); }
+  .topbar-right { display: flex; align-items: center; gap: 16px; }
+  .user-badge {
+    font-size: 10px; letter-spacing: 1px; color: var(--muted);
+    background: var(--card); padding: 6px 12px; border-radius: 20px;
+    border: 1px solid var(--border);
+  }
+
+  .content { max-width: 1200px; margin: 0 auto; padding: 32px; }
+
+  /* ── Stats Bar ── */
+  .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px; }
+  .stat-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .stat-value { font-size: 28px; font-weight: 700; }
+  .stat-label { font-size: 10px; letter-spacing: 2px; color: var(--muted); margin-top: 4px; }
+
+  /* ── Section Header ── */
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .section-title { font-size: 14px; letter-spacing: 3px; color: var(--muted); }
+
+  /* ── Upload Form ── */
+  .upload-card {
+    background: var(--card); border: 1px solid var(--cyan);
+    border-radius: 16px; padding: 28px; margin-bottom: 32px;
+    box-shadow: 0 0 30px rgba(0,245,255,0.06);
+  }
+  .upload-card h3 {
+    font-size: 13px; letter-spacing: 3px; color: var(--cyan);
+    margin-bottom: 24px; display: flex; align-items: center; gap: 10px;
+  }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-grid .full { grid-column: 1/-1; }
+  select {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font); font-size: 13px;
+    padding: 10px 14px; border-radius: 8px; outline: none; width: 100%;
+  }
+  select:focus { border-color: var(--cyan); }
+  textarea {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--font); font-size: 12px;
+    padding: 10px 14px; border-radius: 8px; outline: none;
+    width: 100%; resize: vertical; min-height: 70px;
+  }
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: 12px;
+    padding: 40px; text-align: center; cursor: pointer;
+    transition: all 0.2s; position: relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--cyan); background: rgba(0,245,255,0.04);
+  }
+  .drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-icon { font-size: 32px; margin-bottom: 10px; }
+  .drop-text { font-size: 11px; letter-spacing: 2px; color: var(--muted); }
+  .file-chosen { color: var(--green); margin-top: 8px; font-size: 12px; }
+
+  /* ── Progress Bar ── */
+  .progress-wrap { display: none; margin-top: 16px; }
+  .progress-bar {
+    height: 4px; background: var(--border); border-radius: 2px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, var(--cyan), var(--purple));
+    width: 0; transition: width 0.3s; border-radius: 2px;
+  }
+  .progress-label { font-size: 10px; color: var(--muted); margin-top: 6px; }
+
+  /* ── Song Table ── */
+  .song-table { width: 100%; border-collapse: collapse; }
+  .song-table th {
+    font-size: 9px; letter-spacing: 2px; color: var(--muted);
+    text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+  }
+  .song-table td {
+    padding: 14px; border-bottom: 1px solid rgba(30,42,58,0.5);
+    vertical-align: middle;
+  }
+  .song-table tr:hover td { background: rgba(0,245,255,0.02); }
+  .song-title { font-weight: 700; color: var(--text); }
+  .song-artist { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .genre-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 9px; letter-spacing: 1px; font-weight: 700;
+  }
+  .genre-cristiana { background: rgba(255,214,10,0.15); color: var(--gold); border: 1px solid rgba(255,214,10,0.3); }
+  .genre-rock      { background: rgba(0,245,255,0.1);   color: var(--cyan);   border: 1px solid rgba(0,245,255,0.2); }
+  .genre-pop       { background: rgba(191,90,242,0.15); color: var(--purple); border: 1px solid rgba(191,90,242,0.3); }
+  .genre-metal     { background: rgba(255,0,110,0.15);  color: var(--magenta);border: 1px solid rgba(255,0,110,0.3); }
+  .genre-funk      { background: rgba(57,255,20,0.1);   color: var(--green);  border: 1px solid rgba(57,255,20,0.2); }
+
+  .diff-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 9px; letter-spacing: 1px;
+  }
+  .diff-beginner     { background:#1a3a1a; color:#39FF14; }
+  .diff-intermediate { background:#2a2a00; color:#FFD60A; }
+  .diff-advanced     { background:#2a1a00; color:#FF8C00; }
+  .diff-expert       { background:#2a0a0a; color:#FF006E; }
+
+  .lock-badge {
+    font-size: 10px; padding: 2px 8px; border-radius: 4px;
+  }
+  .locked   { background:rgba(255,0,110,0.1); color:var(--magenta); }
+  .unlocked { background:rgba(57,255,20,0.1); color:var(--green); }
+
+  /* ── Alert / Toast ── */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 20px;
+    font-size: 12px; letter-spacing: 1px;
+    transform: translateY(80px); opacity: 0;
+    transition: all 0.3s; z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.success { border-color: var(--green); color: var(--green); }
+  .toast.error   { border-color: var(--magenta); color: var(--magenta); }
+
+  /* ── Filters ── */
+  .filter-row { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  .filter-chip {
+    padding: 5px 14px; border-radius: 20px; font-size: 10px;
+    letter-spacing: 1px; cursor: pointer; transition: all 0.2s;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  }
+  .filter-chip.active { border-color: var(--cyan); color: var(--cyan); background: rgba(0,245,255,0.08); }
+
+  /* ── Loading ── */
+  .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 40px; justify-content: center; }
+  .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--cyan); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error-msg { color: var(--magenta); font-size: 11px; margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+<!-- ── AUTH SCREEN ─────────────────────────────────────────────────── -->
+<div id="auth-screen">
+  <div class="logo">🥁 NAVADRUMMER</div>
+  <div class="auth-card">
+    <h2>ACCESO EXCLUSIVO — ADMIN</h2>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="email" placeholder="admin@navadrummer.com" />
+    </div>
+    <div class="field">
+      <label>Contraseña</label>
+      <input type="password" id="password" placeholder="••••••••••" />
+    </div>
+    <div id="error-msg"></div>
+    <button class="btn btn-primary" onclick="signIn()">ENTRAR AL PANEL</button>
+  </div>
+</div>
+
+<!-- ── MAIN ADMIN PANEL ────────────────────────────────────────────── -->
+<div id="main-screen">
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="topbar-logo">🥁 NAVADRUMMER ADMIN</div>
+    <div class="topbar-right">
+      <div class="user-badge" id="user-email">—</div>
+      <button class="btn btn-sm" onclick="signOut()">SALIR</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- Stats -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total" style="color:var(--cyan)">—</div>
+        <div class="stat-label">CANCIONES TOTALES</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-christian" style="color:var(--gold)">—</div>
+        <div class="stat-label">✝️ MÚSICA CRISTIANA</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-unlocked" style="color:var(--green)">—</div>
+        <div class="stat-label">CANCIONES LIBRES</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-premium" style="color:var(--magenta)">—</div>
+        <div class="stat-label">PREMIUM / BLOQUEADAS</div>
+      </div>
+    </div>
+
+    <!-- Upload Form -->
+    <div class="upload-card">
+      <h3>➕ AGREGAR NUEVA CANCIÓN</h3>
+      <div class="form-grid">
+        <div class="field">
+          <label>Título de la Canción *</label>
+          <input type="text" id="f-title" placeholder="How Great Is Our God" />
+        </div>
+        <div class="field">
+          <label>Artista / Banda *</label>
+          <input type="text" id="f-artist" placeholder="Chris Tomlin" />
+        </div>
+        <div class="field">
+          <label>Género *</label>
+          <select id="f-genre">
+            <option value="cristiana">✝️ Música Cristiana</option>
+            <option value="rock">🎸 Rock Clásico</option>
+            <option value="pop">🎵 Pop Moderno</option>
+            <option value="funk">🎷 Funk / Soul</option>
+            <option value="metal">🔥 Metal</option>
+            <option value="jazz">🎺 Jazz</option>
+            <option value="latin">🪘 Latino</option>
+            <option value="electronic">🎛️ Electrónico</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Dificultad *</label>
+          <select id="f-difficulty">
+            <option value="beginner">🟢 Principiante</option>
+            <option value="intermediate">🟡 Intermedio</option>
+            <option value="advanced">🔴 Avanzado</option>
+            <option value="expert">⚫ Experto</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>BPM *</label>
+          <input type="number" id="f-bpm" placeholder="120" min="40" max="300" />
+        </div>
+        <div class="field">
+          <label>Duración (segundos) *</label>
+          <input type="number" id="f-duration" placeholder="120" min="10" />
+        </div>
+        <div class="field">
+          <label>Etiqueta de Técnica</label>
+          <input type="text" id="f-technique" placeholder="Ghost Notes, Groove Funky..." />
+        </div>
+        <div class="field">
+          <label>Nivel Requerido (1-15)</label>
+          <input type="number" id="f-level" placeholder="1" min="1" max="15" value="1" />
+        </div>
+        <div class="field full">
+          <label>Descripción</label>
+          <textarea id="f-description" placeholder="Describe el groove, la técnica y qué aprenderá el estudiante..."></textarea>
+        </div>
+        <div class="field" style="flex-direction:row;align-items:center;gap:12px;">
+          <input type="checkbox" id="f-premium" style="width:auto;cursor:pointer;" />
+          <label for="f-premium" style="cursor:pointer;letter-spacing:1px;">
+            🔒 Canción Premium (requiere nivel)
+          </label>
+        </div>
+        <div></div>
+        <div class="field full">
+          <label>Archivo MIDI (.mid) *</label>
+          <div class="drop-zone" id="drop-zone">
+            <input type="file" id="f-midi" accept=".mid,.midi" onchange="fileChosen(this)" />
+            <div class="drop-icon">🎵</div>
+            <div class="drop-text">ARRASTRA TU ARCHIVO .MID AQUÍ</div>
+            <div class="drop-text" style="margin-top:4px">o haz clic para seleccionar</div>
+            <div class="file-chosen" id="file-name"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div class="progress-wrap" id="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-label" id="progress-label">Subiendo...</div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-top:20px;">
+        <button class="btn btn-primary" onclick="uploadSong()" style="flex:1;max-width:260px;">
+          ✅ PUBLICAR CANCIÓN
+        </button>
+        <button class="btn btn-sm" onclick="clearForm()">LIMPIAR</button>
+      </div>
+    </div>
+
+    <!-- Song List -->
+    <div class="section-header">
+      <div class="section-title">CATÁLOGO DE CANCIONES</div>
+      <input type="text" id="search" placeholder="🔍 Buscar..." style="width:220px;"
+             oninput="filterSongs()" />
+    </div>
+
+    <div class="filter-row" id="filter-row">
+      <div class="filter-chip active" data-genre="all" onclick="setGenreFilter(this,'all')">TODAS</div>
+      <div class="filter-chip" data-genre="cristiana" onclick="setGenreFilter(this,'cristiana')">✝️ CRISTIANA</div>
+      <div class="filter-chip" data-genre="rock"      onclick="setGenreFilter(this,'rock')">🎸 ROCK</div>
+      <div class="filter-chip" data-genre="pop"       onclick="setGenreFilter(this,'pop')">🎵 POP</div>
+      <div class="filter-chip" data-genre="funk"      onclick="setGenreFilter(this,'funk')">🎷 FUNK</div>
+      <div class="filter-chip" data-genre="metal"     onclick="setGenreFilter(this,'metal')">🔥 METAL</div>
+    </div>
+
+    <div id="songs-container">
+      <div class="loading"><div class="spinner"></div> Cargando catálogo...</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── TOAST ── -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── Firebase Config ─────────────────────────────────────────────────────────
+// ⚠️ REEMPLAZA con tu configuración real de Firebase Console
+const firebaseConfig = {
+  apiKey:            "YOUR_API_KEY",
+  authDomain:        "YOUR_PROJECT.firebaseapp.com",
+  projectId:         "YOUR_PROJECT_ID",
+  storageBucket:     "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId:             "YOUR_APP_ID"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth    = firebase.auth();
+const db      = firebase.firestore();
+const storage = firebase.storage();
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let allSongs     = [];
+let activeGenre  = 'all';
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+auth.onAuthStateChanged(user => {
+  if (user) {
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('main-screen').style.display = 'block';
+    document.getElementById('user-email').textContent = user.email;
+    loadSongs();
+  } else {
+    document.getElementById('auth-screen').style.display = 'flex';
+    document.getElementById('main-screen').style.display = 'none';
+  }
+});
+
+async function signIn() {
+  const email = document.getElementById('email').value.trim();
+  const pass  = document.getElementById('password').value;
+  const err   = document.getElementById('error-msg');
+  err.textContent = '';
+  try {
+    await auth.signInWithEmailAndPassword(email, pass);
+  } catch(e) {
+    err.textContent = '❌ ' + (e.message || 'Error de autenticación');
+  }
+}
+
+function signOut() {
+  if (confirm('¿Cerrar sesión?')) auth.signOut();
+}
+
+// ─── Upload Song ─────────────────────────────────────────────────────────────
+async function uploadSong() {
+  const title     = document.getElementById('f-title').value.trim();
+  const artist    = document.getElementById('f-artist').value.trim();
+  const genre     = document.getElementById('f-genre').value;
+  const diff      = document.getElementById('f-difficulty').value;
+  const bpm       = parseInt(document.getElementById('f-bpm').value);
+  const duration  = parseInt(document.getElementById('f-duration').value);
+  const technique = document.getElementById('f-technique').value.trim();
+  const level     = parseInt(document.getElementById('f-level').value) || 1;
+  const desc      = document.getElementById('f-description').value.trim();
+  const isPremium = document.getElementById('f-premium').checked;
+  const fileInput = document.getElementById('f-midi');
+  const file      = fileInput.files[0];
+
+  if (!title || !artist || !bpm || !duration || !file) {
+    showToast('⚠️ Completa todos los campos obligatorios', 'error'); return;
+  }
+  if (!file.name.endsWith('.mid') && !file.name.endsWith('.midi')) {
+    showToast('⚠️ El archivo debe ser .mid o .midi', 'error'); return;
+  }
+
+  // Generate a clean song ID from title
+  const songId = title.toLowerCase()
+    .replace(/[áàâä]/g,'a').replace(/[éèêë]/g,'e')
+    .replace(/[íìîï]/g,'i').replace(/[óòôö]/g,'o')
+    .replace(/[úùûü]/g,'u').replace(/ñ/g,'n')
+    .replace(/[^a-z0-9\s]/g,'').trim().replace(/\s+/g,'_');
+
+  const progressWrap = document.getElementById('progress-wrap');
+  const progressFill = document.getElementById('progress-fill');
+  const progressLabel = document.getElementById('progress-label');
+  progressWrap.style.display = 'block';
+
+  try {
+    // 1. Upload MIDI to Firebase Storage
+    const storageRef = storage.ref(`midi/${songId}.mid`);
+    const uploadTask = storageRef.put(file, { contentType: 'audio/midi' });
+
+    await new Promise((resolve, reject) => {
+      uploadTask.on('state_changed',
+        snap => {
+          const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+          progressFill.style.width = pct + '%';
+          progressLabel.textContent = `Subiendo MIDI... ${pct}%`;
+        },
+        reject,
+        resolve
+      );
+    });
+
+    progressLabel.textContent = 'Guardando en catálogo...';
+
+    // 2. Save metadata to Firestore
+    await db.collection('songs').doc(songId).set({
+      title,
+      artist,
+      genre,
+      difficulty:       diff,
+      bpm,
+      durationSeconds:  duration,
+      techniqueTag:     technique,
+      requiredLevel:    level,
+      description:      desc,
+      isPremium,
+      xpReward:         xpFromDiff(diff),
+      midiStoragePath:  `midi/${songId}.mid`,
+      createdAt:        firebase.firestore.FieldValue.serverTimestamp(),
+      createdBy:        auth.currentUser.email,
+    });
+
+    progressFill.style.width = '100%';
+    progressLabel.textContent = '✅ Canción publicada exitosamente';
+    showToast(`✅ "${title}" publicada en el catálogo`, 'success');
+
+    clearForm();
+    loadSongs();
+
+    setTimeout(() => { progressWrap.style.display = 'none'; }, 3000);
+
+  } catch(e) {
+    showToast('❌ Error: ' + e.message, 'error');
+    progressWrap.style.display = 'none';
+    console.error(e);
+  }
+}
+
+function xpFromDiff(d) {
+  return { beginner:100, intermediate:225, advanced:375, expert:550 }[d] || 100;
+}
+
+// ─── Load Songs ───────────────────────────────────────────────────────────────
+async function loadSongs() {
+  document.getElementById('songs-container').innerHTML =
+    '<div class="loading"><div class="spinner"></div> Cargando catálogo...</div>';
+  try {
+    const snap = await db.collection('songs').orderBy('genre').orderBy('title').get();
+    allSongs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateStats();
+    renderSongs();
+  } catch(e) {
+    document.getElementById('songs-container').innerHTML =
+      `<div class="loading" style="color:var(--magenta)">❌ ${e.message}</div>`;
+  }
+}
+
+function updateStats() {
+  document.getElementById('stat-total').textContent     = allSongs.length;
+  document.getElementById('stat-christian').textContent = allSongs.filter(s=>s.genre==='cristiana').length;
+  document.getElementById('stat-unlocked').textContent  = allSongs.filter(s=>!s.isPremium).length;
+  document.getElementById('stat-premium').textContent   = allSongs.filter(s=>s.isPremium).length;
+}
+
+function renderSongs() {
+  const search = document.getElementById('search').value.toLowerCase();
+  let filtered = allSongs.filter(s => {
+    const matchGenre  = activeGenre === 'all' || s.genre === activeGenre;
+    const matchSearch = !search ||
+      s.title.toLowerCase().includes(search) ||
+      (s.artist||'').toLowerCase().includes(search);
+    return matchGenre && matchSearch;
+  });
+
+  if (!filtered.length) {
+    document.getElementById('songs-container').innerHTML =
+      '<div class="loading" style="color:var(--muted)">Sin resultados</div>';
+    return;
+  }
+
+  const genreClass = { cristiana:'genre-cristiana', rock:'genre-rock', pop:'genre-pop',
+                        metal:'genre-metal', funk:'genre-funk', jazz:'genre-rock',
+                        latin:'genre-funk', electronic:'genre-pop' };
+  const diffClass  = { beginner:'diff-beginner', intermediate:'diff-intermediate',
+                        advanced:'diff-advanced', expert:'diff-expert' };
+  const diffLabel  = { beginner:'PRINCIPIANTE', intermediate:'INTERMEDIO',
+                        advanced:'AVANZADO', expert:'EXPERTO' };
+  const genreEmoji = { cristiana:'✝️', rock:'🎸', pop:'🎵', funk:'🎷',
+                        metal:'🔥', jazz:'🎺', latin:'🪘', electronic:'🎛️' };
+
+  document.getElementById('songs-container').innerHTML = `
+    <table class="song-table">
+      <thead>
+        <tr>
+          <th>CANCIÓN</th><th>GÉNERO</th><th>DIFICULTAD</th>
+          <th>BPM</th><th>ACCESO</th><th>ACCIONES</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(s => `
+          <tr>
+            <td>
+              <div class="song-title">${s.title}</div>
+              <div class="song-artist">${s.artist || '—'}</div>
+              ${s.techniqueTag ? `<div style="font-size:9px;color:var(--purple);margin-top:2px;letter-spacing:1px;">${s.techniqueTag}</div>` : ''}
+            </td>
+            <td>
+              <span class="genre-badge ${genreClass[s.genre]||'genre-rock'}">
+                ${genreEmoji[s.genre]||''} ${(s.genre||'').toUpperCase()}
+              </span>
+            </td>
+            <td><span class="diff-badge ${diffClass[s.difficulty]||'diff-beginner'}">${diffLabel[s.difficulty]||s.difficulty}</span></td>
+            <td style="color:var(--cyan);font-weight:700;">${s.bpm}</td>
+            <td>
+              <span class="lock-badge ${s.isPremium?'locked':'unlocked'}">
+                ${s.isPremium ? '🔒 Nivel '+s.requiredLevel : '🔓 Libre'}
+              </span>
+            </td>
+            <td>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-sm" onclick="toggleLock('${s.id}',${s.isPremium})">
+                  ${s.isPremium ? '🔓 DESBLOQUEAR' : '🔒 BLOQUEAR'}
+                </button>
+                <button class="btn btn-sm" style="border-color:var(--magenta);color:var(--magenta);"
+                  onclick="deleteSong('${s.id}','${s.title}')">🗑️</button>
+              </div>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ─── Actions ──────────────────────────────────────────────────────────────────
+async function toggleLock(id, isPremium) {
+  await db.collection('songs').doc(id).update({ isPremium: !isPremium });
+  showToast(`${isPremium ? '🔓 Canción desbloqueada' : '🔒 Canción bloqueada'}`, 'success');
+  loadSongs();
+}
+
+async function deleteSong(id, title) {
+  if (!confirm(`¿Eliminar "${title}" del catálogo?\n\nEsto eliminará el registro de Firestore. El archivo MIDI en Storage NO se borrará automáticamente.`)) return;
+  await db.collection('songs').doc(id).delete();
+  showToast(`🗑️ "${title}" eliminada`, 'success');
+  loadSongs();
+}
+
+function setGenreFilter(el, genre) {
+  activeGenre = genre;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderSongs();
+}
+
+function filterSongs() { renderSongs(); }
+
+function fileChosen(input) {
+  const name = input.files[0]?.name || '';
+  document.getElementById('file-name').textContent = name ? `📄 ${name}` : '';
+}
+
+function clearForm() {
+  ['f-title','f-artist','f-bpm','f-duration','f-technique','f-description'].forEach(id=>{
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('f-level').value = '1';
+  document.getElementById('f-midi').value = '';
+  document.getElementById('file-name').textContent = '';
+  document.getElementById('f-premium').checked = false;
+}
+
+// ─── Drag & Drop ──────────────────────────────────────────────────────────────
+const dz = document.getElementById('drop-zone');
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop',      e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    document.getElementById('f-midi').files; // can't set directly
+    // Show file name
+    document.getElementById('file-name').textContent = `📄 ${file.name}`;
+  }
+});
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// ─── Enter key on auth ────────────────────────────────────────────────────────
+document.getElementById('password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') signIn();
+});
+</script>
+</body>
+</html>

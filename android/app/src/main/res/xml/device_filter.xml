@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Generic USB MIDI class -->
+    <usb-device class="1" subclass="3" protocol="0" />
+    <!-- Roland -->
+    <usb-device vendor-id="0x0582" />
+    <!-- Alesis -->
+    <usb-device vendor-id="0x13b2" />
+    <!-- Yamaha -->
+    <usb-device vendor-id="0x0499" />
+</resources>

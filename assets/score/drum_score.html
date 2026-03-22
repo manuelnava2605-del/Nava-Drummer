@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: #0a0a0f;
+    width: 100%;
+    height: 100%;
+    font-family: sans-serif;
+    overflow: hidden;
+  }
+  #wrapper {
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: scroll;
+    position: relative;
+    -webkit-overflow-scrolling: touch;
+  }
+  #canvas-host {
+    position: relative;
+    padding: 8px 0 24px 0;
+  }
+  #score-root {
+    position: relative;
+  }
+  #playhead {
+    position: absolute;
+    width: 3px;
+    background: linear-gradient(to bottom, transparent 0%, #00ffdc 30%, #00ffdc 70%, transparent 100%);
+    box-shadow: 0 0 12px #00ffdc, 0 0 4px #00ffdc;
+    pointer-events: none;
+    z-index: 50;
+    top: 0;
+    left: 0;
+    height: 90px;
+    will-change: top, left;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div id="wrapper">
+  <div id="canvas-host">
+    <div id="score-root"></div>
+    <div id="playhead"></div>
+  </div>
+</div>
+
+<script src="vexflow.js"></script>
+<script>
+const VF = Vex.Flow;
+
+// ── Drum pad pitch map ────────────────────────────────────────────────────────
+const PAD_INFO = {
+  kick:        { keys: ['f/4'],  stem: 'down', xHead: false },
+  snare:       { keys: ['c/5'],  stem: 'up',   xHead: false },
+  rimshot:     { keys: ['c/5'],  stem: 'up',   xHead: true  },
+  crossstick:  { keys: ['c/5'],  stem: 'up',   xHead: true  },
+  hihatClosed: { keys: ['g/5'],  stem: 'up',   xHead: true  },
+  hihatOpen:   { keys: ['g/5'],  stem: 'up',   xHead: true  },
+  hihatPedal:  { keys: ['d/4'],  stem: 'down', xHead: true  },
+  crash1:      { keys: ['a/5'],  stem: 'up',   xHead: true  },
+  crash2:      { keys: ['b/5'],  stem: 'up',   xHead: true  },
+  ride:        { keys: ['f/5'],  stem: 'up',   xHead: true  },
+  rideBell:    { keys: ['f/5'],  stem: 'up',   xHead: true  },
+  tom1:        { keys: ['e/5'],  stem: 'up',   xHead: false },
+  tom2:        { keys: ['d/5'],  stem: 'up',   xHead: false },
+  tom3:        { keys: ['b/4'],  stem: 'up',   xHead: false },
+  floorTom:    { keys: ['a/4'],  stem: 'down', xHead: false },
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _bpm = 120, _bpb = 4, _totalBeats = 0;
+let _barXMap = [];  // [{beat, x, y, width, row}]
+let _mode = 'events';
+
+// ── Layout constants ──────────────────────────────────────────────────────────
+const ROW_H       = 110;
+const STAVE_Y_IN_ROW = 20;
+const STAVE_H     = 90;
+const BAR_W       = 200;
+const FIRST_EXTRA = 70;
+
+function getBarsPerRow() {
+  return window.innerWidth < 600 ? 2 : 4;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ════════════════════════════════════════════════════════════════════════════
+
+function toDur(frac) {
+  if (frac >= 1.0)   return { dur: 'q',  dots: 0 };
+  if (frac >= 0.75)  return { dur: '8',  dots: 1 };
+  if (frac >= 0.5)   return { dur: '8',  dots: 0 };
+  if (frac >= 0.375) return { dur: '16', dots: 1 };
+  if (frac >= 0.25)  return { dur: '16', dots: 0 };
+  return                    { dur: '32', dots: 0 };
+}
+
+function mxmlTypeToDur(type) {
+  switch (type) {
+    case 'whole':   return 'w';
+    case 'half':    return 'h';
+    case 'quarter': return 'q';
+    case 'eighth':  return '8';
+    case '16th':    return '16';
+    case '32nd':    return '32';
+    case '64th':    return '64';
+    default:        return 'q';
+  }
+}
+
+function makeFallbackRest() {
+  try { return new VF.StaveNote({ keys: ['b/4'], duration: 'qr', type: 'r' }); } catch(_) { return null; }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODE 1 — NoteEvent rendering (render action)
+// ════════════════════════════════════════════════════════════════════════════
+
+function buildBars(notes, bpb) {
+  if (!notes.length) return [];
+  const maxBeat = Math.max(...notes.map(n => n.beatPosition));
+  const numBars = Math.ceil((maxBeat + bpb) / bpb);
+  const GRID    = 0.25;
+  const slots   = Math.round(bpb / GRID);
+  const bars = Array.from({ length: numBars }, (_, i) => ({
+    startBeat: i * bpb,
+    grid: Array.from({ length: slots }, () => []),
+  }));
+  for (const n of notes) {
+    const bar  = Math.floor(n.beatPosition / bpb);
+    if (bar < 0 || bar >= numBars) continue;
+    const rel  = n.beatPosition - bar * bpb;
+    const slot = Math.min(Math.round(rel / GRID), slots - 1);
+    bars[bar].grid[slot].push(n);
+  }
+  return bars;
+}
+
+function buildTickablesFromGrid(bar, bpb) {
+  const GRID  = 0.25;
+  const slots = bar.grid.length;
+  const items = [];
+  let i = 0;
+  while (i < slots) {
+    const hits = bar.grid[i];
+    if (!hits.length) {
+      let run = 1;
+      while (i + run < slots && !bar.grid[i + run].length) run++;
+      const frac = run * GRID;
+      const { dur, dots } = toDur(frac);
+      let rest;
+      try {
+        rest = new VF.StaveNote({ keys: ['b/4'], duration: dur + 'r', type: 'r' });
+        if (dots) rest.addModifier(new VF.Dot(), 0);
+      } catch(_) { i += run; continue; }
+      items.push(rest);
+      i += run;
+      continue;
+    }
+    const keySet = new Map();
+    for (const h of hits) {
+      const info = PAD_INFO[h.pad];
+      if (!info) continue;
+      const k = info.keys[0];
+      if (!keySet.has(k)) keySet.set(k, info.xHead);
+    }
+    const keys = [...keySet.keys()];
+    if (!keys.length) { i++; continue; }
+    const { dur, dots } = toDur(GRID);
+    let note;
+    try {
+      note = new VF.StaveNote({ keys, duration: dur, clef: 'percussion' });
+      if (dots) note.addModifier(new VF.Dot(), 0);
+      keys.forEach((k, idx) => {
+        if (keySet.get(k)) {
+          try { note.setKeyStyle(idx, { fillStyle: '#fff', strokeStyle: '#fff' }); } catch(_) {}
+        }
+      });
+    } catch(e) {
+      const fb = makeFallbackRest();
+      if (fb) items.push(fb);
+      i++;
+      continue;
+    }
+    items.push(note);
+    i++;
+  }
+  return items;
+}
+
+function renderEvents(notes, bpm, bpb) {
+  _mode = 'events';
+  _bpm  = bpm;
+  _bpb  = bpb;
+  _totalBeats = notes.length ? Math.max(...notes.map(n => n.beatPosition)) + bpb : bpb;
+  const rawBars = buildBars(notes, bpb);
+  // Wrap as single-voice bars for _drawScore
+  const bars = rawBars.map(b => ({
+    voices: { '1': buildTickablesFromGrid(b, bpb) },
+    startBeat: b.startBeat,
+    bpb,
+  }));
+  _drawScore(bars, bpb, 4);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MODE 2 — MusicXML rendering (renderXML action)
+// ════════════════════════════════════════════════════════════════════════════
+
+function parseMusicXML(xmlString) {
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(xmlString, 'text/xml');
+  const part   = doc.querySelector('part');
+  if (!part) return null;
+  const measures = part.querySelectorAll('measure');
+
+  let divisions = 1;
+  let bpb       = 4;
+  let beatType  = 4;
+  let tempo     = 120;
+
+  const parsedBars = [];
+  let totalBeats   = 0;
+
+  measures.forEach((mEl) => {
+    // Update running attributes
+    const attrsEl = mEl.querySelector('attributes');
+    if (attrsEl) {
+      const divEl  = attrsEl.querySelector('divisions');
+      const beatEl = attrsEl.querySelector('time > beats');
+      const btEl   = attrsEl.querySelector('time > beat-type');
+      if (divEl)  divisions = parseInt(divEl.textContent) || 1;
+      if (beatEl) bpb       = parseInt(beatEl.textContent) || 4;
+      if (btEl)   beatType  = parseInt(btEl.textContent) || 4;
+    }
+    const soundEl = mEl.querySelector('direction > sound[tempo]');
+    if (soundEl) tempo = parseFloat(soundEl.getAttribute('tempo')) || tempo;
+
+    // Collect notes grouped by voice
+    const noteEls = mEl.querySelectorAll('note');
+    // voices: Map<voiceStr, {slots: [], lastSlot}>
+    const voiceData = {};
+
+    noteEls.forEach(noteEl => {
+      const isGrace = noteEl.querySelector('grace') !== null;
+      if (isGrace) return;
+
+      const isChord = noteEl.querySelector('chord') !== null;
+      const isRest  = noteEl.querySelector('rest') !== null;
+
+      const typeEl = noteEl.querySelector('type');
+      if (!typeEl) return;
+
+      const voiceEl = noteEl.querySelector('voice');
+      const voiceKey = voiceEl ? voiceEl.textContent.trim() : '1';
+
+      if (!voiceData[voiceKey]) {
+        voiceData[voiceKey] = { slots: [], lastSlot: null };
+      }
+      const vd = voiceData[voiceKey];
+
+      const dur    = mxmlTypeToDur(typeEl.textContent.trim());
+      const dotCnt = noteEl.querySelectorAll('dot').length;
+
+      if (isRest) {
+        vd.lastSlot = null;
+        vd.slots.push({ keys: ['b/4'], xIdx: new Set(), dur, dots: dotCnt, isRest: true });
+        return;
+      }
+
+      const unpitched = noteEl.querySelector('unpitched');
+      const notehead  = noteEl.querySelector('notehead');
+      let key = 'b/4';
+      let isX = false;
+
+      if (unpitched) {
+        const step   = unpitched.querySelector('display-step')?.textContent?.trim()   || 'B';
+        const octave = unpitched.querySelector('display-octave')?.textContent?.trim() || '4';
+        key = `${step.toLowerCase()}/${octave}`;
+      }
+      if (notehead) {
+        const nhText = notehead.textContent.trim().toLowerCase();
+        isX = nhText === 'x' || nhText.startsWith('x');
+      }
+
+      if (isChord && vd.lastSlot) {
+        vd.lastSlot.keys.push(key);
+        if (isX) vd.lastSlot.xIdx.add(vd.lastSlot.keys.length - 1);
+      } else {
+        vd.lastSlot = {
+          keys: [key],
+          xIdx: isX ? new Set([0]) : new Set(),
+          dur,
+          dots: dotCnt,
+          isRest: false,
+        };
+        vd.slots.push(vd.lastSlot);
+      }
+    });
+
+    // Build per-voice slot arrays
+    const voiceSlots = {};
+    for (const [vk, vd] of Object.entries(voiceData)) {
+      voiceSlots[vk] = vd.slots;
+    }
+
+    parsedBars.push({ voiceSlots, bpb, beatType, startBeat: totalBeats });
+    totalBeats += bpb;
+  });
+
+  return { bars: parsedBars, bpb, beatType, tempo, totalBeats };
+}
+
+function buildTickablesFromSlots(slots) {
+  const items = [];
+  for (const s of slots) {
+    let note;
+    try {
+      if (s.isRest) {
+        note = new VF.StaveNote({ keys: s.keys, duration: s.dur + 'r', type: 'r' });
+      } else {
+        note = new VF.StaveNote({ keys: s.keys, duration: s.dur, clef: 'percussion' });
+        s.xIdx.forEach(idx => {
+          try { note.setKeyStyle(idx, { fillStyle: '#fff', strokeStyle: '#fff' }); } catch(_) {}
+        });
+      }
+      for (let d = 0; d < s.dots; d++) note.addModifier(new VF.Dot(), 0);
+    } catch(e) {
+      const fb = makeFallbackRest();
+      if (fb) items.push(fb);
+      continue;
+    }
+    items.push(note);
+  }
+  return items;
+}
+
+function renderXML(xmlString) {
+  _mode = 'xml';
+  const result = parseMusicXML(xmlString);
+  if (!result) {
+    document.getElementById('score-root').innerHTML =
+      '<p style="color:#e55;padding:20px">Error al parsear MusicXML</p>';
+    return;
+  }
+  _bpb        = result.bpb;
+  _bpm        = result.tempo;
+  _totalBeats = result.totalBeats;
+
+  const bars = result.bars.map(b => {
+    const voices = {};
+    for (const [vk, slots] of Object.entries(b.voiceSlots)) {
+      voices[vk] = buildTickablesFromSlots(slots);
+    }
+    return { voices, startBeat: b.startBeat, bpb: b.bpb };
+  });
+
+  _drawScore(bars, result.bpb, result.beatType);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SHARED SVG RENDERER — multi-line layout
+// Each bar: {voices: {'1': [...tickables], '2': [...tickables]}, startBeat, bpb}
+// ════════════════════════════════════════════════════════════════════════════
+
+function _beamVoice(tickables, beatType) {
+  const beamable = tickables.filter(n => {
+    if (!n.getDuration) return false;
+    try { return !n.isRest() && (n.getDuration() === '8' || n.getDuration() === '16'); }
+    catch(_) { return false; }
+  });
+  if (beamable.length < 2) return [];
+  try {
+    if (beatType === 8) {
+      return VF.Beam.generateBeams(beamable, {
+        groups: [
+          new VF.Fraction(3, 8),
+          new VF.Fraction(3, 8),
+          new VF.Fraction(3, 8),
+          new VF.Fraction(3, 8),
+        ],
+      });
+    }
+    return VF.Beam.generateBeams(beamable);
+  } catch(_) { return []; }
+}
+
+function _drawScore(bars, bpb, beatType) {
+  beatType = beatType || 4;
+  const root = document.getElementById('score-root');
+  root.innerHTML = '';
+  _barXMap = [];
+
+  const ph = document.getElementById('playhead');
+  ph.style.display = 'none';
+
+  if (!bars.length) {
+    root.innerHTML = '<p style="color:#666;padding:20px">Sin notas</p>';
+    return;
+  }
+
+  const BARS_PER_ROW = getBarsPerRow();
+  const numRows      = Math.ceil(bars.length / BARS_PER_ROW);
+  const SVG_W        = FIRST_EXTRA + BARS_PER_ROW * BAR_W;
+  const SVG_H        = numRows * ROW_H;
+
+  const div = document.createElement('div');
+  div.style.position = 'relative';
+  div.style.width    = SVG_W + 'px';
+  div.style.height   = SVG_H + 'px';
+
+  const renderer = new VF.Renderer(div, VF.Renderer.Backends.SVG);
+  renderer.resize(SVG_W, SVG_H);
+  const ctx = renderer.getContext();
+  ctx.setFillStyle('#ffffff');
+  ctx.setStrokeStyle('#555555');
+
+  bars.forEach((bar, idx) => {
+    const row    = Math.floor(idx / BARS_PER_ROW);
+    const col    = idx % BARS_PER_ROW;
+    const isFirstInRow = col === 0;
+    const isFirst      = idx === 0;
+
+    const rowY   = row * ROW_H;
+    const staveY = rowY + STAVE_Y_IN_ROW;
+
+    // Compute stave x and width
+    let staveX, staveW, noteAreaX;
+    if (isFirstInRow) {
+      staveX     = 0;
+      staveW     = FIRST_EXTRA + BAR_W;
+      noteAreaX  = FIRST_EXTRA;
+    } else {
+      staveX     = FIRST_EXTRA + col * BAR_W;
+      staveW     = BAR_W;
+      noteAreaX  = staveX;
+    }
+
+    _barXMap.push({
+      beat:  bar.startBeat,
+      x:     noteAreaX,
+      y:     staveY,
+      width: BAR_W,
+      row,
+    });
+
+    // Draw stave
+    const stave = new VF.Stave(staveX, staveY, staveW);
+    if (isFirstInRow) stave.addClef('percussion');
+    if (isFirst)      stave.addTimeSignature(bpb + '/' + beatType);
+    stave.setContext(ctx).draw();
+
+    // Bar number label
+    try {
+      ctx.save();
+      ctx.setFillStyle('#aaaaaa');
+      ctx.setFont('sans-serif', 10, 'normal');
+      ctx.fillText(String(idx + 1), noteAreaX + 2, staveY + 10);
+      ctx.restore();
+    } catch(_) {}
+
+    // Build voices
+    const voiceKeys = Object.keys(bar.voices || {});
+    if (!voiceKeys.length) return;
+
+    const vfVoices = [];
+    const allBeams = [];
+
+    for (const vk of voiceKeys) {
+      const tickables = bar.voices[vk];
+      if (!tickables || !tickables.length) continue;
+      try {
+        const voice = new VF.Voice({ num_beats: bpb, beat_value: beatType });
+        voice.setStrict(false);
+        voice.addTickables(tickables);
+        vfVoices.push(voice);
+        const beams = _beamVoice(tickables, beatType);
+        allBeams.push(...beams);
+      } catch(e) {
+        console.warn('Voice build error bar', idx, ':', e.message);
+      }
+    }
+
+    if (!vfVoices.length) return;
+
+    try {
+      const formatter = new VF.Formatter();
+      formatter.joinVoices(vfVoices).format(vfVoices, BAR_W - 10);
+      vfVoices.forEach(v => v.draw(ctx, stave));
+      allBeams.forEach(b => { try { b.setContext(ctx).draw(); } catch(_) {} });
+    } catch(e) {
+      console.warn('Bar', idx, 'format/draw error:', e.message);
+    }
+  });
+
+  root.appendChild(div);
+
+  // Set canvas-host height to fit content
+  const host = document.getElementById('canvas-host');
+  host.style.width  = SVG_W + 'px';
+  host.style.height = (SVG_H + 32) + 'px';
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PLAYHEAD
+// ════════════════════════════════════════════════════════════════════════════
+
+function updatePlayhead(timeSeconds) {
+  const beatPos = (timeSeconds / 60) * _bpm;
+  if (!_barXMap.length) return;
+
+  const barIdx = Math.min(Math.floor(beatPos / _bpb), _barXMap.length - 1);
+  const within = beatPos - barIdx * _bpb;
+  const frac   = Math.min(within / _bpb, 1);
+
+  const bar    = _barXMap[barIdx];
+  const xPos   = bar.x + bar.width * frac;
+  const yPos   = bar.y;
+
+  const ph = document.getElementById('playhead');
+  ph.style.display = 'block';
+  ph.style.left    = xPos + 'px';
+  ph.style.top     = yPos + 'px';
+  ph.style.height  = STAVE_H + 'px';
+
+  // Auto-scroll so current row is visible
+  const wrapper = document.getElementById('wrapper');
+  const viewH   = wrapper.clientHeight;
+  const targetScrollTop = yPos - viewH * 0.3;
+  wrapper.scrollTop = Math.max(0, targetScrollTop);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// BRIDGE
+// ════════════════════════════════════════════════════════════════════════════
+
+function NavaScoreChannel(jsonStr) {
+  try {
+    const msg = JSON.parse(jsonStr);
+    if (msg.action === 'render')
+      renderEvents(msg.notes, msg.bpm, msg.beatsPerBar);
+    else if (msg.action === 'renderXML')
+      renderXML(msg.xml);
+    else if (msg.action === 'updatePlayhead')
+      updatePlayhead(msg.timeSeconds);
+  } catch(e) { console.error('NavaScoreChannel error:', e); }
+}
+
+window.addEventListener('message', e => {
+  try {
+    const d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+    NavaScoreChannel(JSON.stringify(d));
+  } catch(_) {}
+});
+
+window.onload = () => {
+  if (window.FlutterChannel) {
+    window.FlutterChannel.postMessage(JSON.stringify({ event: 'ready' }));
+  }
+};
+</script>
+</body>
+</html>

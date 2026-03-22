@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter devices:*)",
+      "Bash(grep -v \"^$\")",
+      "Bash(flutter run:*)",
+      "Bash(python -c \":*)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -r \"AudioHitDetector\\\\|AudioHit\\\\|injectSyntheticEvent\\\\|requestMicPermission\" /c/Proyectos/nava_drummer/lib --include=*.dart)",
+      "Bash(flutter analyze:*)",
+      "Bash(flutter build:*)",
+      "Bash(adb -s E6JVFADMLNCQFYW8 install -r \"C:/Proyectos/nava_drummer/build/app/outputs/flutter-apk/app-debug.apk\")",
+      "Bash(flutter install:*)",
+      "Bash(grep -E \"\\\\.dart$\")",
+      "Bash(cp \"C:/Proyectos/Coda - Aún/song.ini\" \"C:/Proyectos/nava_drummer/assets/songs/aun_coda/song.ini\")",
+      "Bash(cp \"C:/Proyectos/Coda - Aún/notes.mid\" \"C:/Proyectos/nava_drummer/assets/songs/aun_coda/notes.mid\")",
+      "Bash(cp \"C:/Proyectos/Coda - Aún/drums.ogg\" \"C:/Proyectos/nava_drummer/assets/songs/aun_coda/drums.ogg\")",
+      "Bash(cp \"C:/Proyectos/Coda - Aún/guitar.ogg\" \"C:/Proyectos/nava_drummer/assets/songs/aun_coda/guitar.ogg\")",
+      "Bash(cp \"C:/Proyectos/Coda - Aún/rhythm.ogg\" \"C:/Proyectos/nava_drummer/assets/songs/aun_coda/rhythm.ogg\")",
+      "Bash(adb -s E6JVFADMLNCQFYW8 install -r \"build\\\\app\\\\outputs\\\\flutter-apk\\\\app-debug.apk\")",
+      "Bash(sort -k5 -n)",
+      "Bash(find C:/Proyectos/nava_drummer/assets -name *.mp3 -o -name *.wav -o -name *.ogg)",
+      "WebSearch"
+    ]
+  }
+}

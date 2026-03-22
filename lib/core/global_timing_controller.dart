@@ -15,7 +15,7 @@ import 'dart:math' as math;
 /// Single source of truth for all time measurements in NavaDrummer.
 ///
 /// Architecture:
-///   T_global(t) = t_now_µs + syncOffset_µs + driftCorrection_µs
+///   T_global(t) = t_now_µs + syncOffset_µs + userOffset_µs + driftCorrection_µs
 ///
 /// All sub-systems (MIDI, audio, renderer) call [currentTimeMicros] and
 /// never read their own clocks independently.
@@ -27,18 +27,27 @@ class GlobalTimingController {
   // ── State ──────────────────────────────────────────────────────────────────
 
   /// Offset added to every timestamp to align MIDI hardware clock to
-  /// Dart's DateTime clock.  Set by calibration or latency measurement.
+  /// Dart's DateTime clock. Set by automatic calibration or latency measurement.
   int syncOffsetMicros = 0;
 
-  /// Accumulated drift correction from the Kalman filter.
+  /// Manual user calibration offset.
+  ///
+  /// Negative values make the engine judge hits a little earlier.
+  /// Positive values make the engine judge hits a little later.
+  ///
+  /// This is the setting rhythm games usually expose to the user as
+  /// "calibration", "audio offset", or "latency offset".
+  int userOffsetMicros = 0;
+
+  /// Accumulated drift correction from recent native-vs-Dart samples.
   /// Updated every [_driftWindowSize] events.
   double _driftCorrectionUs = 0;
 
-  // Drift estimation via linear regression over recent samples
+  // Drift estimation via rolling average over recent samples.
   static const int _driftWindowSize = 32;
   final List<_DriftSample> _driftSamples = [];
 
-  // Session reference — set when practice starts
+  // Session reference — set when practice starts.
   int? _sessionStartUs;
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -48,6 +57,7 @@ class GlobalTimingController {
   int currentTimeMicros() =>
       DateTime.now().microsecondsSinceEpoch +
       syncOffsetMicros +
+      userOffsetMicros +
       _driftCorrectionUs.round();
 
   /// Elapsed time since session started, in microseconds.
@@ -69,6 +79,14 @@ class GlobalTimingController {
     syncOffsetMicros = -measuredLatencyUs;
   }
 
+  /// Manual user calibration setter in milliseconds.
+  void setUserOffsetMs(double ms) {
+    userOffsetMicros = (ms * 1000).round();
+  }
+
+  /// Manual user calibration getter in milliseconds.
+  double get userOffsetMs => userOffsetMicros / 1000.0;
+
   /// Feed a reference timestamp pair to estimate clock drift.
   /// [dartUs] = time as seen by Dart, [nativeUs] = time as seen by native layer.
   void feedDriftSample(int dartUs, int nativeUs) {
@@ -78,8 +96,7 @@ class GlobalTimingController {
   }
 
   void _estimateDrift() {
-    // Linear regression: native_us = a * dart_us + b
-    // drift = average(native_us - dart_us)
+    // Rolling average drift. Simple and stable for this use case.
     double sumDiff = 0;
     for (final s in _driftSamples) {
       sumDiff += (s.nativeUs - s.dartUs);
@@ -89,12 +106,16 @@ class GlobalTimingController {
 
   /// Convert a native timestamp (from Android/iOS) to global time.
   int nativeToGlobal(int nativeTimestampUs) =>
-      nativeTimestampUs + syncOffsetMicros + _driftCorrectionUs.round();
+      nativeTimestampUs +
+      syncOffsetMicros +
+      userOffsetMicros +
+      _driftCorrectionUs.round();
 
   void reset() {
-    syncOffsetMicros   = 0;
+    syncOffsetMicros = 0;
+    userOffsetMicros = 0;
     _driftCorrectionUs = 0;
-    _sessionStartUs    = null;
+    _sessionStartUs = null;
     _driftSamples.clear();
   }
 }
@@ -111,9 +132,9 @@ class _DriftSample {
 /// All timing math lives here. The PracticeEngine delegates scoring to this.
 ///
 /// Key formulas:
-///   T_beat          = 60_000 / BPM            (ms per beat)
+///   T_beat          = 60_000 / BPM             (ms per beat)
 ///   T_subdivision   = T_beat / n               (e.g. n=4 → 16th notes)
-///   Δt              = t_input - t_expected      (timing error, ms)
+///   Δt              = t_input - t_expected     (timing error, ms)
 ///   ε               = Δt / T_beat              (normalized error, dimensionless)
 ///   S               = exp(−Δt² / 2σ²)          (Gaussian score, 0..1)
 ///   score_raw       = S * MAX_SCORE
@@ -122,9 +143,12 @@ class MathTimingEngine {
   // ── Configuration ───────────────────────────────────────────────────────────
 
   /// Base scoring parameters — α and β are fractions of T_beat.
-  static const double _alphaPerfect = 0.04; // |ε| ≤ 0.04 → PERFECT
-  static const double _betaGood     = 0.10; // |ε| ≤ 0.10 → GOOD
-  static const double _betaOkay     = 0.18; // |ε| ≤ 0.18 → OKAY
+  ///
+  /// Tightened slightly so gameplay feels more precise and "pro"
+  /// without becoming unfair for drummers.
+  static const double _alphaPerfect = 0.03; // |ε| ≤ 0.03 → PERFECT
+  static const double _betaGood = 0.08; // |ε| ≤ 0.08 → GOOD
+  static const double _betaOkay = 0.14; // |ε| ≤ 0.14 → OKAY
   // |ε| > βOkay → MISS
 
   /// Gaussian σ as fraction of T_beat (before skill scaling).
@@ -134,34 +158,38 @@ class MathTimingEngine {
   static const int maxHitScore = 1000;
 
   // ── State ──────────────────────────────────────────────────────────────────
-  final int    bpm;
-  final double skillFactor;   // 0.0 (beginner) → 1.0 (expert) — widens windows
-  final double swingRatio;    // 0.0 = straight, 0.33 = light swing, 0.67 = heavy
+  final int bpm;
+  final double skillFactor; // 0.0 (beginner) → 1.0 (expert)
+  final double swingRatio; // 0.0 = straight, 0.33 = light swing, 0.67 = heavy
 
   /// Derived constants
-  late final double tBeatMs;          // ms per beat
-  late final double t16thMs;          // ms per 16th note
-  late final double sigmaMs;          // Gaussian sigma in ms
-  late final double windowPerfectMs;  // |Δt| ≤ this → PERFECT
-  late final double windowGoodMs;     // |Δt| ≤ this → GOOD
-  late final double windowOkayMs;     // |Δt| ≤ this → OKAY
+  late final double tBeatMs; // ms per beat
+  late final double t16thMs; // ms per 16th note
+  late final double sigmaMs; // Gaussian sigma in ms
+  late final double windowPerfectMs; // |Δt| ≤ this → PERFECT
+  late final double windowGoodMs; // |Δt| ≤ this → GOOD
+  late final double windowOkayMs; // |Δt| ≤ this → OKAY
 
   MathTimingEngine({
     required this.bpm,
     this.skillFactor = 0.0,
-    this.swingRatio  = 0.0,
+    this.swingRatio = 0.0,
   }) {
     tBeatMs = 60000.0 / bpm;
     t16thMs = tBeatMs / 4.0;
 
     // Adaptive sigma: wider for beginners (skillFactor → 0)
-    final adaptiveFraction = _sigmaBaseFraction * (1 + (1 - skillFactor) * 0.5);
+    final adaptiveFraction =
+        _sigmaBaseFraction * (1 + (1 - skillFactor) * 0.5);
     sigmaMs = tBeatMs * adaptiveFraction;
 
-    // Dynamic windows scale with BPM
-    windowPerfectMs = tBeatMs * _alphaPerfect * (1 + (1 - skillFactor) * 0.5);
-    windowGoodMs    = tBeatMs * _betaGood     * (1 + (1 - skillFactor) * 0.4);
-    windowOkayMs    = tBeatMs * _betaOkay     * (1 + (1 - skillFactor) * 0.3);
+    // Dynamic windows scale with BPM.
+    // Windows are intentionally a little tighter than before to make the
+    // engine feel more musical and less floaty.
+    windowPerfectMs =
+        tBeatMs * _alphaPerfect * (1 + (1 - skillFactor) * 0.5);
+    windowGoodMs = tBeatMs * _betaGood * (1 + (1 - skillFactor) * 0.4);
+    windowOkayMs = tBeatMs * _betaOkay * (1 + (1 - skillFactor) * 0.3);
   }
 
   // ── Core evaluation ─────────────────────────────────────────────────────────
@@ -180,33 +208,39 @@ class MathTimingEngine {
       math.exp(-(deltaMs * deltaMs) / (2 * sigmaMs * sigmaMs));
 
   /// Integer score for a hit (Gaussian × MAX, rounded).
-  int hitScore(double deltaMs) =>
-      (gaussianScore(deltaMs) * maxHitScore).round();
+  int hitScore(double deltaMs) => (gaussianScore(deltaMs) * maxHitScore).round();
 
   /// Grade classification using BPM-relative dynamic windows.
   ///
   /// Window layout (symmetric around the expected note):
   ///   |δ| ≤ perfect  → PERFECT
-  ///   |δ| ≤ good     → GOOD  (δ<0 = early side, δ>0 = late side, same grade)
+  ///   |δ| ≤ good     → GOOD
   ///   δ  < -good     → EARLY (within okay window, too early)
   ///   δ  >  good     → LATE  (within okay window, too late)
   ///   |δ| > okay     → MISS
   TimingGrade grade(double deltaMs) {
     final abs = deltaMs.abs();
     if (abs <= windowPerfectMs) return TimingGrade.perfect;
-    if (abs <= windowGoodMs)    return TimingGrade.good;
-    if (abs <= windowOkayMs)    return deltaMs < 0 ? TimingGrade.early : TimingGrade.late;
+    if (abs <= windowGoodMs) return TimingGrade.good;
+    if (abs <= windowOkayMs) {
+      return deltaMs < 0 ? TimingGrade.early : TimingGrade.late;
+    }
     return TimingGrade.miss;
   }
 
   /// Textual quality description (includes direction for early/late).
   String qualityLabel(double deltaMs) {
     switch (grade(deltaMs)) {
-      case TimingGrade.perfect: return 'PERFECT';
-      case TimingGrade.good:    return 'GOOD';
-      case TimingGrade.early:   return 'EARLY';
-      case TimingGrade.late:    return 'LATE';
-      case TimingGrade.miss:    return 'MISS';
+      case TimingGrade.perfect:
+        return 'PERFECT';
+      case TimingGrade.good:
+        return 'GOOD';
+      case TimingGrade.early:
+        return 'EARLY';
+      case TimingGrade.late:
+        return 'LATE';
+      case TimingGrade.miss:
+        return 'MISS';
     }
   }
 
@@ -217,33 +251,38 @@ class MathTimingEngine {
   ///   t_expected' = t_expected + swingOffset(beatPosition)
   double swingAdjusted(double tExpectedMs, double beatPosition) {
     if (swingRatio == 0) return tExpectedMs;
-    // Is this an off-beat 8th note? (beatPosition mod 0.5 ≈ 0.25/0.75 of beat)
+
     final posInBeat = beatPosition % 1.0;
     final isOffBeat = (posInBeat - 0.5).abs() < 0.05 ||
-                      (posInBeat - 0.25).abs() < 0.05 ||
-                      (posInBeat - 0.75).abs() < 0.05;
+        (posInBeat - 0.25).abs() < 0.05 ||
+        (posInBeat - 0.75).abs() < 0.05;
+
     if (!isOffBeat) return tExpectedMs;
     return tExpectedMs + swingRatio * (tBeatMs / 2.0);
   }
 
-  // ── Timing analysis ──────────────────────────────────────────────────────────
+  // ── Timing analysis ─────────────────────────────────────────────────────────
 
   /// Analyse a sequence of timing errors and return a [TimingAnalysis].
   TimingAnalysis analyse(List<double> deltas) {
     if (deltas.isEmpty) {
-      return TimingAnalysis(mean: 0, stdDev: 0, bias: TimingBias.neutral,
-          consistency: 1.0, trend: TimingTrend.stable);
+      return TimingAnalysis(
+        mean: 0,
+        stdDev: 0,
+        bias: TimingBias.neutral,
+        consistency: 1.0,
+        trend: TimingTrend.stable,
+      );
     }
 
-    // Mean (bias)
     final mean = deltas.reduce((a, b) => a + b) / deltas.length;
 
-    // Standard deviation (consistency)
-    final variance = deltas.map((d) => (d - mean) * (d - mean))
-        .reduce((a, b) => a + b) / deltas.length;
+    final variance = deltas
+            .map((d) => (d - mean) * (d - mean))
+            .reduce((a, b) => a + b) /
+        deltas.length;
     final std = math.sqrt(variance);
 
-    // Bias classification
     final normMean = mean / tBeatMs;
     final bias = normMean < -0.02
         ? TimingBias.early
@@ -251,34 +290,36 @@ class MathTimingEngine {
             ? TimingBias.late
             : TimingBias.neutral;
 
-    // Consistency: 1.0 = perfect, 0.0 = chaotic (std = T_beat)
     final consistency = math.max(0.0, 1.0 - (std / tBeatMs));
 
-    // Trend: are we getting better or worse?
     TimingTrend trend = TimingTrend.stable;
     if (deltas.length >= 8) {
       final firstHalf = deltas.sublist(0, deltas.length ~/ 2);
-      final lastHalf  = deltas.sublist(deltas.length ~/ 2);
-      final firstStd  = _stdDev(firstHalf);
-      final lastStd   = _stdDev(lastHalf);
-      if (lastStd < firstStd * 0.85)      trend = TimingTrend.improving;
-      else if (lastStd > firstStd * 1.15) trend = TimingTrend.degrading;
+      final lastHalf = deltas.sublist(deltas.length ~/ 2);
+      final firstStd = _stdDev(firstHalf);
+      final lastStd = _stdDev(lastHalf);
+      if (lastStd < firstStd * 0.85) {
+        trend = TimingTrend.improving;
+      } else if (lastStd > firstStd * 1.15) {
+        trend = TimingTrend.degrading;
+      }
     }
 
     return TimingAnalysis(
-      mean:        mean,
-      stdDev:      std,
-      bias:        bias,
+      mean: mean,
+      stdDev: std,
+      bias: bias,
       consistency: consistency,
-      trend:       trend,
+      trend: trend,
     );
   }
 
   double _stdDev(List<double> vals) {
     if (vals.isEmpty) return 0;
     final m = vals.reduce((a, b) => a + b) / vals.length;
-    return math.sqrt(vals.map((v) => (v - m) * (v - m))
-        .reduce((a, b) => a + b) / vals.length);
+    return math.sqrt(
+      vals.map((v) => (v - m) * (v - m)).reduce((a, b) => a + b) / vals.length,
+    );
   }
 
   // ── Skill factor updater ────────────────────────────────────────────────────
@@ -286,29 +327,34 @@ class MathTimingEngine {
   /// Computes skill factor from recent accuracy and consistency.
   /// Returns value in [0.0, 1.0].
   static double computeSkillFactor({
-    required double accuracyPct,     // 0–100
-    required double consistency,     // 0–1
-    required int    currentLevel,    // user XP level
+    required double accuracyPct, // 0–100
+    required double consistency, // 0–1
+    required int currentLevel, // user XP level
   }) {
-    final accNorm   = accuracyPct / 100.0;
+    final accNorm = accuracyPct / 100.0;
     final levelNorm = (currentLevel / 15.0).clamp(0.0, 1.0);
-    return ((accNorm * 0.5) + (consistency * 0.3) + (levelNorm * 0.2)).clamp(0.0, 1.0);
+    return ((accNorm * 0.5) + (consistency * 0.3) + (levelNorm * 0.2))
+        .clamp(0.0, 1.0);
   }
 
   // ── Factory constructors ────────────────────────────────────────────────────
 
   factory MathTimingEngine.forSong({
-    required int    bpm,
-    required int    userLevel,
+    required int bpm,
+    required int userLevel,
     required double recentAccuracy,
     double swingRatio = 0.0,
   }) {
     final skill = computeSkillFactor(
-      accuracyPct:  recentAccuracy,
-      consistency:  0.5,
+      accuracyPct: recentAccuracy,
+      consistency: 0.5,
       currentLevel: userLevel,
     );
-    return MathTimingEngine(bpm: bpm, skillFactor: skill, swingRatio: swingRatio);
+    return MathTimingEngine(
+      bpm: bpm,
+      skillFactor: skill,
+      swingRatio: swingRatio,
+    );
   }
 }
 
@@ -320,15 +366,17 @@ class MathTimingEngine {
 /// perfect → tight hit; good → acceptable; early/late → directional near-miss;
 /// miss → no matching note found.
 enum TimingGrade { perfect, good, early, late, miss }
-enum TimingBias  { early, late, neutral }
+
+enum TimingBias { early, late, neutral }
+
 enum TimingTrend { improving, degrading, stable }
 
 class TimingAnalysis {
-  final double      mean;         // average Δt in ms (+ = late, - = early)
-  final double      stdDev;       // standard deviation in ms
-  final TimingBias  bias;         // overall tendency
-  final double      consistency;  // 0–1 (1 = perfectly consistent)
-  final TimingTrend trend;        // getting better/worse/stable
+  final double mean; // average Δt in ms (+ = late, - = early)
+  final double stdDev; // standard deviation in ms
+  final TimingBias bias; // overall tendency
+  final double consistency; // 0–1 (1 = perfectly consistent)
+  final TimingTrend trend; // getting better/worse/stable
 
   const TimingAnalysis({
     required this.mean,
@@ -344,23 +392,33 @@ class TimingAnalysis {
 
     switch (bias) {
       case TimingBias.early:
-        buffer.write('Tocas ${mean.abs().toStringAsFixed(0)}ms antes del beat. '
-            'Intenta esperar la nota antes de golpear.');
+        buffer.write(
+          'Tocas ${mean.abs().toStringAsFixed(0)}ms antes del beat. '
+          'Intenta esperar la nota antes de golpear.',
+        );
         break;
       case TimingBias.late:
-        buffer.write('Tocas ${mean.toStringAsFixed(0)}ms después del beat. '
-            'Anticipa el golpe un poco más.');
+        buffer.write(
+          'Tocas ${mean.toStringAsFixed(0)}ms después del beat. '
+          'Anticipa el golpe un poco más.',
+        );
         break;
       case TimingBias.neutral:
-        buffer.write('Tu timing centrado es bueno (${mean.abs().toStringAsFixed(0)}ms de promedio).');
+        buffer.write(
+          'Tu timing centrado es bueno (${mean.abs().toStringAsFixed(0)}ms de promedio).',
+        );
         break;
     }
 
     if (consistency < 0.6) {
-      buffer.write(' Tu consistencia (±${stdDev.toStringAsFixed(0)}ms) necesita trabajo — '
-          'practica con metrónomo a 50% de tempo.');
+      buffer.write(
+        ' Tu consistencia (±${stdDev.toStringAsFixed(0)}ms) necesita trabajo — '
+        'practica con metrónomo a 50% de tempo.',
+      );
     } else if (consistency > 0.85) {
-      buffer.write(' Excelente consistencia (±${stdDev.toStringAsFixed(0)}ms).');
+      buffer.write(
+        ' Excelente consistencia (±${stdDev.toStringAsFixed(0)}ms).',
+      );
     }
 
     switch (trend) {
@@ -381,7 +439,7 @@ class TimingAnalysis {
   String toString() =>
       'TimingAnalysis(mean=${mean.toStringAsFixed(1)}ms, '
       'std=${stdDev.toStringAsFixed(1)}ms, bias=$bias, '
-      'consistency=${(consistency*100).toStringAsFixed(0)}%, trend=$trend)';
+      'consistency=${(consistency * 100).toStringAsFixed(0)}%, trend=$trend)';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -399,16 +457,16 @@ class TimingAnalysis {
 ///   // in CustomPainter / AnimatedBuilder:
 ///   final t = interp.smoothSeconds;
 class RenderPlayheadInterpolator {
-  double _lastSeconds    = 0;
-  int    _lastWallUs     = 0;
-  double _tempoFactor    = 1.0;
-  bool   _running        = false;
+  double _lastSeconds = 0;
+  int _lastWallUs = 0;
+  double _tempoFactor = 1.0;
+  bool _running = false;
 
   /// Call this from engine.playheadTime stream listener.
   void onEngineUpdate(double playheadSeconds) {
     _lastSeconds = playheadSeconds;
-    _lastWallUs  = DateTime.now().microsecondsSinceEpoch;
-    _running     = true;
+    _lastWallUs = DateTime.now().microsecondsSinceEpoch;
+    _running = true;
   }
 
   /// Notify tempo changes so extrapolation stays accurate.
@@ -422,13 +480,13 @@ class RenderPlayheadInterpolator {
     if (!_running || _lastWallUs == 0) return _lastSeconds;
     final elapsedUs = DateTime.now().microsecondsSinceEpoch - _lastWallUs;
     // Cap extrapolation at 100ms to avoid drift if engine stalls
-    final cappedUs  = elapsedUs.clamp(0, 100000);
+    final cappedUs = elapsedUs.clamp(0, 100000);
     return _lastSeconds + (cappedUs / 1e6) * _tempoFactor;
   }
 
   void reset() {
     _lastSeconds = 0;
-    _lastWallUs  = 0;
-    _running     = false;
+    _lastWallUs = 0;
+    _running = false;
   }
 }

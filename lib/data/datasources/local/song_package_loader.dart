@@ -12,7 +12,12 @@
 //   5. Build Song entity     → SongPackage
 //
 // Single entry point: SongPackageLoader.load(packageAssetDir)
+//
+// Path routing (automatic — callers don't need to know):
+//   'assets/songs/...'  → Flutter asset bundle  (rootBundle)
+//   '/data/...'         → Local filesystem       (dart:io File)
 // ─────────────────────────────────────────────────────────────────────────────
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -40,8 +45,8 @@ class SongPackageLoader {
   static const Map<StemType, List<String>> _stemCandidates = {
     StemType.drums:   ['drums.ogg',   'drum.ogg'],
     StemType.guitar:  ['guitar.ogg',  'lead.ogg'],
-    StemType.rhythm:  ['rhythm.ogg',  'bass.ogg', 'rhytm.ogg'],
-    StemType.vocals:  ['vocals.ogg',  'vocal.ogg', 'song.ogg'],
+    StemType.rhythm:  ['rhythm.ogg',  'rhytm.ogg'],
+    StemType.vocals:  ['vocals.ogg',  'vocal.ogg'],
     StemType.song:    ['song.ogg',    'mix.ogg',  'preview.ogg'],
     StemType.keys:    ['keys.ogg',    'keyboard.ogg'],
     StemType.bass:    ['bass.ogg'],
@@ -50,10 +55,15 @@ class SongPackageLoader {
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
+  /// Returns true if [packageDir] is a local filesystem path (downloaded song).
+  /// Returns false if it is a Flutter asset bundle path.
+  static bool _isLocalPath(String packageDir) => packageDir.startsWith('/');
+
   /// Load and parse a complete song package from [packageAssetDir].
   ///
-  /// [packageAssetDir] must be a Flutter asset path without trailing slash,
-  /// e.g. 'assets/songs/aun_coda'.
+  /// Accepts both Flutter asset paths ('assets/songs/aun_coda') and
+  /// absolute local filesystem paths ('/data/.../song_cache/aun_coda').
+  /// Routing is automatic — callers do not need to distinguish.
   ///
   /// Throws [SongPackageLoadException] if the package is invalid.
   static Future<SongPackage> load(String packageAssetDir) async {
@@ -69,7 +79,7 @@ class SongPackageLoader {
     final hasAnyDrums  = ini.diffDrums >= 0 || ini.diffDrumsReal >= 0;
 
     // ── Step 3: Parse notes.mid ───────────────────────────────────────────────
-    final midiBytes = await rootBundle.load('$packageAssetDir/notes.mid');
+    final midiBytes = await _loadMidiBytes(packageAssetDir);
     final parser    = MidiFileParser();
 
     // Try to parse with Clone Hero Expert mapping first if flagged as pro drums.
@@ -126,11 +136,14 @@ class SongPackageLoader {
     debugPrint('[SongPackageLoader] After dedup: ${dedupedChart.length} notes '
         '(removed ${chart.length - dedupedChart.length} duplicates)');
 
+    debugPrint('[SongPackageLoader] Chart ready: ${dedupedChart.length} notes, '
+        'firstNote=${dedupedChart.isNotEmpty ? dedupedChart.first.timeSeconds.toStringAsFixed(3) : "n/a"}s');
+
     // ── Step 5: Derive SyncProfile from MIDI + ini ───────────────────────────
     final syncProfile = _buildSyncProfile(
-      ini:        ini,
+      ini:      ini,
       midiResult: midiResult,
-      songId:     _songIdFromDir(packageAssetDir),
+      songId:   _songIdFromDir(packageAssetDir),
     );
 
     debugPrint('[SongPackageLoader] SyncProfile: BPM=${syncProfile.bpm.toStringAsFixed(1)}, '
@@ -174,92 +187,106 @@ class SongPackageLoader {
     }
   }
 
-  /// Load and parse song.ini from the package directory.
+  // ── Source-agnostic file loaders ────────────────────────────────────────────
+
+  /// Reads a text file from [packageDir]/song.ini, supporting both
+  /// asset bundle paths and local filesystem paths.
   static Future<SongIni> _loadIni(String packageDir) async {
     try {
-      final text = await rootBundle.loadString('$packageDir/song.ini');
+      final text = _isLocalPath(packageDir)
+          ? await File('$packageDir/song.ini').readAsString()
+          : await rootBundle.loadString('$packageDir/song.ini');
       return SongIniParser.parse(text);
     } catch (e) {
       throw SongPackageLoadException('Cannot read song.ini at $packageDir: $e');
     }
   }
 
+  /// Reads notes.mid as [ByteData], supporting both asset and local paths.
+  static Future<ByteData> _loadMidiBytes(String packageDir) async {
+    if (_isLocalPath(packageDir)) {
+      final bytes = await File('$packageDir/notes.mid').readAsBytes();
+      return bytes.buffer.asByteData();
+    }
+    return rootBundle.load('$packageDir/notes.mid');
+  }
+
   /// Build [SongSyncProfile] from MIDI data and ini metadata.
   ///
-  /// For Clone Hero / RBN packages:
-  /// • BPM comes from the MIDI tempo map (authoritative)
-  /// • Time signature from MIDI meta events
-  /// • Chart offset = time of first note (some packages have a count-in gap)
-  /// • Audio offset = 0 (OGG files have no AAC encoder delay)
-  /// • delay in song.ini shifts the chart start (positive = chart is later)
+  /// Chart note times are kept exactly as parsed from MIDI (no normalization).
+  /// Audio starts at t=0 with the chart. Real intros (e.g. 42s before first
+  /// drum hit) are preserved. Only ini.delay shifts the audio start.
   static SongSyncProfile _buildSyncProfile({
     required SongIni ini,
     required MidiParseResult midiResult,
     required String songId,
   }) {
-    // BPM from MIDI tempo map
     final bpmFromMidi = midiResult.bpm;
     final bpm         = bpmFromMidi > 0 ? bpmFromMidi : 120.0;
 
-    // Time signature
-    final timeSig    = '${midiResult.timeSignature.numerator}/${midiResult.timeSignature.denominator}';
-    final beatsPerBar = _beatsPerBar(midiResult.timeSignature.numerator,
-                                     midiResult.timeSignature.denominator);
+    final timeSig      = '${midiResult.timeSignature.numerator}/${midiResult.timeSignature.denominator}';
+    final beatsPerBar  = _beatsPerBar(midiResult.timeSignature.numerator,
+                                      midiResult.timeSignature.denominator);
     final subdivisions = _subdivisions(midiResult.timeSignature.numerator,
                                        midiResult.timeSignature.denominator);
 
-    // Chart offset = time of first note (count-in gap before music starts)
-    // Adjusted by ini.delayMs (milliseconds, can be negative)
-    final firstNoteSeconds = midiResult.noteEvents.isNotEmpty
-        ? midiResult.noteEvents.first.timeSeconds
-        : 0.0;
-    final delaySeconds      = ini.delayMs / 1000.0;
-    final chartOffsetSec    = (firstNoteSeconds + delaySeconds).clamp(0.0, double.infinity);
+    // chartOffsetSeconds = ini delay only.  No firstNoteSeconds compensation.
+    final chartOffsetSec = (ini.delayMs / 1000.0).clamp(0.0, double.infinity);
 
-    // OGG files do not have AAC encoder delay → audioOffsetSeconds = 0
+    // audioOffsetSeconds = 0: audio and chart share the same t=0 origin.
     const audioOffsetSec = 0.0;
 
-    // Song length from ini (in ms) → used for display and engine stop condition
     final songLengthSec = ini.songLengthMs > 0
         ? ini.songLengthMs / 1000.0
-        : (midiResult.totalDuration.inMilliseconds / 1000.0);
+        : midiResult.totalDuration.inMilliseconds / 1000.0;
 
     return SongSyncProfile(
-      songId:               songId,
-      bpm:                  bpm,
-      timeSignature:        timeSig,
-      beatsPerBar:          beatsPerBar,
-      subdivisions:         subdivisions,
-      audioOffsetSeconds:   audioOffsetSec,
-      chartOffsetSeconds:   chartOffsetSec,
-      songLengthSeconds:    songLengthSec,
+      songId:             songId,
+      bpm:                bpm,
+      timeSignature:      timeSig,
+      beatsPerBar:        beatsPerBar,
+      subdivisions:       subdivisions,
+      audioOffsetSeconds: audioOffsetSec,
+      chartOffsetSeconds: chartOffsetSec,
+      songLengthSeconds:  songLengthSec,
       notes: 'Auto-derived from ${ini.name} by ${ini.artist}. '
-             'BPM=$bpm (from MIDI), timeSig=$timeSig, '
-             'chartOffset=${chartOffsetSec.toStringAsFixed(3)}s, '
-             'delay=${ini.delayMs}ms.',
+             'BPM=$bpm, timeSig=$timeSig, '
+             'chartOffset=${chartOffsetSec.toStringAsFixed(3)}s (delayMs=${ini.delayMs}), '
+             'audioOffset=0 (raw MIDI times preserved).',
     );
   }
 
   /// Scan the package directory for known stem filenames.
-  /// Uses [rootBundle.load] with a try/catch to detect presence without
-  /// loading the full audio file (just checks if asset exists).
+  ///
+  /// For asset paths: probes via [rootBundle.load] (try/catch).
+  /// For local paths: uses [File.existsSync] (cheaper, no exception overhead).
   static Future<AudioTrackSet> _buildAudioTrackSet(String packageDir) async {
-    final found = <StemType, String>{};
+    final isLocal = _isLocalPath(packageDir);
+    final found   = <StemType, String>{};
+
     for (final entry in _stemCandidates.entries) {
       for (final filename in entry.value) {
         final path = '$packageDir/$filename';
-        try {
-          // Check if the asset exists by attempting a small load.
-          // We only need to verify existence, not read the whole file.
-          await rootBundle.load(path);
+        final exists = isLocal
+            ? File(path).existsSync()
+            : await _assetExists(path);
+        if (exists) {
           found[entry.key] = filename;
-          break; // found this stem, move on to next
-        } catch (_) {
-          // Asset not present — try next candidate
+          break; // found this stem type, try the next
         }
       }
     }
-    return AudioTrackSet(packageDir: packageDir, stems: found);
+    return AudioTrackSet(packageDir: packageDir, stems: found, isLocal: isLocal);
+  }
+
+  /// Checks whether a Flutter asset exists without loading its full content.
+  static Future<bool> _assetExists(String assetPath) async {
+    try {
+      await rootBundle.load(assetPath);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Build the [Song] entity from package metadata.

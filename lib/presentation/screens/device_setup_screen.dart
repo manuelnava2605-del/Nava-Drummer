@@ -26,6 +26,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
   SetupStep _step = SetupStep.selectDevice;
 
   // For manual pad mapping
+  // ignore: unused_field
   final Map<DrumPad, int?> _manualMapping = {};
   DrumPad? _awaitingPad;
   StreamSubscription? _mappingSub;
@@ -429,7 +430,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
     setState(() => _awaitingPad = pad);
     _mappingSub?.cancel();
     _mappingSub = widget.midiEngine.midiEvents
-        .where((e) => (e as MidiEvent).isNoteOn)
+        .where((e) => e.isNoteOn)
         .first
         .asStream()
         .listen((event) {

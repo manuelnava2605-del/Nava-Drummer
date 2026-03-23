@@ -1,23 +1,47 @@
 // NavaDrummer — Firebase Storage Rules
 // Deploy: firebase deploy --only storage
+//
+// Paths:
+//   Songs/{folder}/{file}     — song packages (notes.mid, *.ogg, album.png, song.ini)
+//   midi/{songId}.mid         — legacy MIDI files
+//   avatars/{userId}/{file}   — user profile pictures
 
 rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // ── MIDI files (public read, admin write) ────────────────────────────────
-    match /midi/{songId} {
-      allow read:  if request.auth != null; // authenticated users only
-      allow write: if false; // admin SDK only
+    // ── Song packages ─────────────────────────────────────────────────────────
+    // Any authenticated user can download song packages (backing tracks, charts).
+    // Writes go through Firebase Console / Admin SDK only.
+    //
+    // Matches: Songs/Coda - Aún/notes.mid
+    //          Songs/Moenia - No Dices Más/guitar.ogg
+    //          Songs/Basic Rock I/album.png
+    match /Songs/{songFolder}/{fileName} {
+      allow read:  if request.auth != null;
+      allow write: if false;
     }
 
-    // ── User avatars ─────────────────────────────────────────────────────────
-    match /avatars/{userId}/{filename} {
+    // Catch-all for any deeper nesting inside Songs/
+    match /Songs/{restOfPath=**} {
+      allow read:  if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── Legacy MIDI files ─────────────────────────────────────────────────────
+    match /midi/{fileName} {
+      allow read:  if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── User avatars ──────────────────────────────────────────────────────────
+    // Users can upload/replace only their own avatar (≤ 2 MB, image/* only).
+    match /avatars/{userId}/{fileName} {
       allow read:  if request.auth != null;
       allow write: if request.auth != null
                    && request.auth.uid == userId
-                   && request.resource.size  < 2 * 1024 * 1024  // 2MB limit
+                   && request.resource.size  < 2 * 1024 * 1024
                    && request.resource.contentType.matches('image/.*');
     }
   }

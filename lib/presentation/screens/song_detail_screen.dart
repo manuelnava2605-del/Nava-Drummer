@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // NavaDrummer — Song Detail Screen
-// Shows full song metadata before entering practice mode.
+// Shows full song metadata. Tapping JUEGO or PARTITURA starts practice directly.
 // ─────────────────────────────────────────────────────────────────────────────
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -12,7 +12,6 @@ class SongDetailScreen extends StatelessWidget {
   final Song           song;
   final int            userLevel;
   final void Function(Song, PracticeMode) onStartPractice;
-  /// Called when the user taps a section and picks a practice mode.
   final void Function(Song, SongSection, PracticeMode)? onSectionPractice;
 
   const SongDetailScreen({
@@ -75,7 +74,7 @@ class SongDetailScreen extends StatelessWidget {
         ),
 
         SafeArea(child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 48),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
             // Back button
@@ -133,7 +132,7 @@ class SongDetailScreen extends StatelessWidget {
 
             const SizedBox(height: 32),
 
-            // XP reward
+            // Info card
             _InfoCard(children: [
               _InfoRow(Icons.star_rounded, '+${song.xpReward} XP', NavaTheme.neonGold),
               _InfoRow(Icons.music_note_rounded, _genreLabel(song.genre), NavaTheme.neonPurple),
@@ -156,11 +155,11 @@ class SongDetailScreen extends StatelessWidget {
               const SizedBox(height: 24),
             ],
 
-            // Mode selection label
+            // Mode selection
             const _SectionLabel('MODO DE PRÁCTICA'),
             const SizedBox(height: 12),
 
-            // Mode buttons
+            // JUEGO and PARTITURA — tap to start directly
             Row(children: [
               Expanded(child: _ModeButton(
                 icon:    Icons.sports_esports_rounded,
@@ -178,26 +177,6 @@ class SongDetailScreen extends StatelessWidget {
                 onTap:   () => onStartPractice(song, PracticeMode.sheet),
               ).animate().fadeIn(delay: 360.ms).slideY(begin: 0.2)),
             ]),
-
-            const SizedBox(height: 16),
-
-            // Start button
-            SizedBox(width: double.infinity, child: ElevatedButton(
-              onPressed: () => onStartPractice(song, PracticeMode.game),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: NavaTheme.neonCyan,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                elevation: 0,
-              ),
-              child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Icons.play_arrow_rounded, color: NavaTheme.background, size: 24),
-                SizedBox(width: 8),
-                Text('TOCAR', style: TextStyle(fontFamily: 'DrummerDisplay',
-                    fontSize: 16, color: NavaTheme.background,
-                    fontWeight: FontWeight.bold, letterSpacing: 2)),
-              ]),
-            ).animate().fadeIn(delay: 400.ms)),
           ]),
         )),
       ]),

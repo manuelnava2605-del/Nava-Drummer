@@ -6,7 +6,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../domain/entities/entities.dart';
 import 'ai_learning_system.dart';
-import 'global_timing_controller.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AnalyticsService

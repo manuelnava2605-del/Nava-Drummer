@@ -2,12 +2,15 @@
 // NavaDrummer — Practice Screen (FIXED PRO VERSION)
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dart:async';
-import 'dart:math' as math;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities/entities.dart';
+import '../bloc/blocs.dart';
 import '../widgets/mode_selector.dart';
 import '../../core/practice_engine.dart';
 import '../../core/audio_service.dart';
@@ -186,15 +189,12 @@ class _PracticeScreenState extends State<PracticeScreen>
     }));
 
     _subs.add(widget.engine.hitResults.listen((r) {
-      if (!BackingTrackService.instance.isReady &&
-          !BackingTrackService.instance.isPlaying) {
-
-        AudioService.instance.playDrumPad(
-          r.expected.pad,
-          velocityNorm: (r.actual?.normalizedVelocity ?? 1.0),
-        );
-      }
-
+      // Drum-pad audio is handled upstream:
+      //   • Physical kit hits  → DrumEngine.hit() in PracticeEngine._onMidi()
+      //   • On-screen pad taps → DrumEngine.hit() in PracticeEngine.onScreenHit()
+      // Playing r.expected.pad here was wrong (it echoes the CHART note, not
+      // the pad the user actually hit) and caused double-sound on every hit.
+      // Only grade feedback (click/chime) belongs here.
       AudioService.instance.playGradeSound(r.grade);
     }));
   }
@@ -210,6 +210,12 @@ class _PracticeScreenState extends State<PracticeScreen>
   void _showResults() {
     final session = widget.engine.finish();
     if (!mounted) return;
+
+    // ── Persist session & update Firestore progress ───────────────────────
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      context.read<ProgressBloc>().add(ProgressSessionCompleted(session, uid));
+    }
 
     final report = CoachEngine.instance.processSession(session);
 
@@ -244,6 +250,11 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   void _handleHudTap() {
+    // The sync debug panel is a developer tool only.
+    // In release/profile builds this gesture does nothing so it never
+    // interrupts gameplay for end users.
+    if (!kDebugMode) return;
+
     final now = DateTime.now();
     final last = _lastScoreTapTime;
 
@@ -255,7 +266,7 @@ class _PracticeScreenState extends State<PracticeScreen>
 
     _lastScoreTapTime = now;
 
-    if (_scorePanelTapCount >= 3) {
+    if (_scorePanelTapCount >= 5) {
       _scorePanelTapCount = 0;
 
       setState(() {
@@ -387,8 +398,422 @@ class _PracticeScreenState extends State<PracticeScreen>
         ),
       );
 
-  Widget _buildSettings(BuildContext context) => const SizedBox();
-  Widget _buildLoading() => const Center(child: CircularProgressIndicator());
-  Widget _buildError() => const Center(child: Text("Error"));
-  void _showExitDialog() {}
+  // ── Exit dialog ───────────────────────────────────────────────────────────
+
+  void _showExitDialog() {
+    final wasPlaying =
+        _engineState == EngineState.playing ||
+        _engineState == EngineState.countIn;
+
+    if (wasPlaying) widget.engine.pause();
+
+    showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        backgroundColor: NavaTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('🥁', style: TextStyle(fontSize: 40)),
+              const SizedBox(height: 12),
+              const Text('¿Salir de la sesión?',
+                  style: TextStyle(
+                      fontFamily: 'DrummerDisplay',
+                      fontSize: 18,
+                      color: NavaTheme.textPrimary,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text(
+                  'Tu progreso en esta sesión\nno se guardará.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontFamily: 'DrummerBody',
+                      fontSize: 13,
+                      color: NavaTheme.textSecondary)),
+              const SizedBox(height: 24),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: NavaTheme.textMuted),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('CONTINUAR',
+                        style: TextStyle(
+                            fontFamily: 'DrummerBody',
+                            fontSize: 12,
+                            color: NavaTheme.textSecondary,
+                            letterSpacing: 1)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: NavaTheme.hitMiss,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    child: const Text('SALIR',
+                        style: TextStyle(
+                            fontFamily: 'DrummerDisplay',
+                            fontSize: 13,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1)),
+                  ),
+                ),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    ).then((confirmed) {
+      if (!mounted) return;
+      if (confirmed == true) {
+        widget.engine.stop();
+        Navigator.pop(context);
+      } else if (wasPlaying) {
+        widget.engine.resume();
+      }
+    });
+  }
+
+  // ── In-game settings panel ────────────────────────────────────────────────
+
+  Widget _buildSettings(BuildContext context) {
+    return Stack(children: [
+      // dim backdrop — tap to close
+      GestureDetector(
+        onTap: () => setState(() => _showSettings = false),
+        child: Container(color: Colors.black45),
+      ),
+      // panel slides in from the right
+      Align(
+        alignment: Alignment.centerRight,
+        child: _SettingsPanel(
+          tempoMultiplier: _tempoMultiplier,
+          backingVolume:   _backingVolume,
+          drumVolume:      _drumVolume,
+          loopEnabled:     _loopEnabled,
+          isGameMode:      _practiceMode == PracticeMode.game,
+          onTempoChanged: (v) {
+            setState(() => _tempoMultiplier = v);
+            widget.engine.setTempoFactor(v);
+          },
+          onBackingVolumeChanged: (v) {
+            setState(() => _backingVolume = v);
+            BackingTrackService.instance.setVolume(v);
+          },
+          onDrumVolumeChanged: (v) {
+            setState(() => _drumVolume = v);
+            AudioService.instance.drumVolume = v;
+          },
+          onClose: () => setState(() => _showSettings = false),
+        ),
+      ),
+    ]);
+  }
+
+  // ── Loading screen ─────────────────────────────────────────────────────────
+
+  Widget _buildLoading() => Container(
+        color: NavaTheme.background,
+        child: const Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            CircularProgressIndicator(color: NavaTheme.neonCyan, strokeWidth: 2),
+            SizedBox(height: 16),
+            Text('Cargando canción…',
+                style: TextStyle(
+                    fontFamily: 'DrummerBody',
+                    fontSize: 13,
+                    color: NavaTheme.textSecondary)),
+          ]),
+        ),
+      );
+
+  // ── Error screen ───────────────────────────────────────────────────────────
+
+  Widget _buildError() => Container(
+        color: NavaTheme.background,
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('⚠️', style: TextStyle(fontSize: 48)),
+                const SizedBox(height: 16),
+                const Text('No se pudo cargar la canción',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        fontFamily: 'DrummerDisplay',
+                        fontSize: 18,
+                        color: NavaTheme.textPrimary,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Text(_loadError ?? '',
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontFamily: 'DrummerBody',
+                        fontSize: 11,
+                        color: NavaTheme.textMuted)),
+                const SizedBox(height: 32),
+                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back, size: 16,
+                        color: NavaTheme.textSecondary),
+                    label: const Text('VOLVER',
+                        style: TextStyle(
+                            fontFamily: 'DrummerBody',
+                            fontSize: 12,
+                            color: NavaTheme.textSecondary,
+                            letterSpacing: 1)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: NavaTheme.textMuted),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _loadSong,
+                    icon: const Icon(Icons.refresh, size: 16,
+                        color: NavaTheme.background),
+                    label: const Text('REINTENTAR',
+                        style: TextStyle(
+                            fontFamily: 'DrummerDisplay',
+                            fontSize: 12,
+                            color: NavaTheme.background,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: NavaTheme.neonCyan,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ]),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Settings panel — slide-in from right during practice
+// ═════════════════════════════════════════════════════════════════════════════
+
+class _SettingsPanel extends StatelessWidget {
+  final double  tempoMultiplier;
+  final double  backingVolume;
+  final double  drumVolume;
+  final bool    loopEnabled;
+  final bool    isGameMode;
+
+  final ValueChanged<double> onTempoChanged;
+  final ValueChanged<double> onBackingVolumeChanged;
+  final ValueChanged<double> onDrumVolumeChanged;
+  final VoidCallback         onClose;
+
+  const _SettingsPanel({
+    required this.tempoMultiplier,
+    required this.backingVolume,
+    required this.drumVolume,
+    required this.loopEnabled,
+    required this.isGameMode,
+    required this.onTempoChanged,
+    required this.onBackingVolumeChanged,
+    required this.onDrumVolumeChanged,
+    required this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 240,
+      height: double.infinity,
+      decoration: const BoxDecoration(
+        color: NavaTheme.surface,
+        border: Border(left: BorderSide(color: NavaTheme.neonCyan, width: 0.5)),
+      ),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(children: [
+                const Text('AJUSTES',
+                    style: TextStyle(
+                        fontFamily: 'DrummerDisplay',
+                        fontSize: 13,
+                        color: NavaTheme.neonCyan,
+                        letterSpacing: 2,
+                        fontWeight: FontWeight.bold)),
+                const Spacer(),
+                GestureDetector(
+                  onTap: onClose,
+                  child: const Icon(Icons.close,
+                      color: NavaTheme.textMuted, size: 20),
+                ),
+              ]),
+
+              const SizedBox(height: 24),
+
+              // Tempo
+              _SliderRow(
+                label: 'TEMPO',
+                value: tempoMultiplier,
+                min: 0.5,
+                max: 1.2,
+                displayText: '${(tempoMultiplier * 100).round()}%',
+                color: NavaTheme.neonCyan,
+                onChanged: onTempoChanged,
+              ),
+
+              const SizedBox(height: 20),
+
+              // Backing track volume
+              _SliderRow(
+                label: 'PISTA',
+                value: backingVolume,
+                min: 0.0,
+                max: 1.0,
+                displayText: '${(backingVolume * 100).round()}%',
+                color: NavaTheme.neonGold,
+                onChanged: onBackingVolumeChanged,
+              ),
+
+              const SizedBox(height: 20),
+
+              // Drum volume
+              _SliderRow(
+                label: 'BATERÍA',
+                value: drumVolume,
+                min: 0.0,
+                max: 1.0,
+                displayText: '${(drumVolume * 100).round()}%',
+                color: NavaTheme.neonGreen,
+                onChanged: onDrumVolumeChanged,
+              ),
+
+              const SizedBox(height: 28),
+
+              // Info chips
+              _InfoChip(
+                icon: Icons.loop,
+                label: loopEnabled ? 'Loop ACTIVADO' : 'Loop desactivado',
+                active: loopEnabled,
+              ),
+              const SizedBox(height: 8),
+              _InfoChip(
+                icon: isGameMode ? Icons.music_note : Icons.notes,
+                label: isGameMode ? 'Modo: Notas cayendo' : 'Modo: Partitura',
+                active: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SliderRow extends StatelessWidget {
+  final String  label;
+  final double  value, min, max;
+  final String  displayText;
+  final Color   color;
+  final ValueChanged<double> onChanged;
+
+  const _SliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.displayText,
+    required this.color,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(children: [
+        Text(label,
+            style: const TextStyle(
+                fontFamily: 'DrummerBody',
+                fontSize: 9,
+                color: NavaTheme.textMuted,
+                letterSpacing: 2)),
+        const Spacer(),
+        Text(displayText,
+            style: TextStyle(
+                fontFamily: 'DrummerDisplay',
+                fontSize: 12,
+                color: color,
+                fontWeight: FontWeight.bold)),
+      ]),
+      const SizedBox(height: 4),
+      SliderTheme(
+        data: SliderThemeData(
+          activeTrackColor:   color,
+          inactiveTrackColor: color.withOpacity(0.15),
+          thumbColor:         color,
+          overlayColor:       color.withOpacity(0.1),
+          trackHeight:        3,
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+        ),
+        child: Slider(value: value, min: min, max: max, onChanged: onChanged),
+      ),
+    ],
+  );
+}
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String   label;
+  final bool     active;
+  const _InfoChip({required this.icon, required this.label, required this.active});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+    decoration: BoxDecoration(
+      color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withOpacity(0.08),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(
+          color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withOpacity(0.25)),
+    ),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon,
+          size: 13,
+          color: active ? NavaTheme.neonCyan : NavaTheme.textMuted),
+      const SizedBox(width: 6),
+      Text(label,
+          style: TextStyle(
+              fontFamily: 'DrummerBody',
+              fontSize: 10,
+              color: active ? NavaTheme.textSecondary : NavaTheme.textMuted)),
+    ]),
+  );
 }

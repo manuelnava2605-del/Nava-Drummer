@@ -1,3 +1,8 @@
+# Secrets — NEVER commit these
+lib/core/secrets.dart
+google-services.json
+GoogleService-Info.plist
+
 # Flutter / Dart
 .dart_tool/
 .packages

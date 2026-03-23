@@ -178,9 +178,11 @@ class MidiFileParser {
 
   /// Returns the beat position accounting for variable time signatures.
   /// In 7/4 sections, bar length is 7 beats; in 4/4 it's 4 beats.
+  // ignore: unused_element
   double _tickToBeatPosition(int tick, int ppq, List<_TimeSigChange> timeSigMap) {
     double beats = 0.0;
     int    lastTick = 0;
+    // ignore: unused_local_variable
     _TimeSignature currentSig = timeSigMap.first.sig;
 
     for (final change in timeSigMap) {
@@ -242,30 +244,73 @@ class MidiFileParser {
   }
 
   // ── Convert Raw → NoteEvents ────────────────────────────────────────────────
+  //
+  // Clone Hero Expert pro-drums emit a base gem note (95–100) AND an optional
+  // cymbal marker note (110–112) at the same tick.  The marker determines
+  // whether the gem is a cymbal or a tom:
+  //
+  //   97 alone → tom1 (yellow tom)
+  //   97 + 110 → hihatClosed (yellow cymbal)
+  //   98 alone → tom2 (blue tom)
+  //   98 + 111 → ride (blue cymbal)
+  //  100 alone → floorTom (green tom)
+  //  100 + 112 → crash1 (green cymbal)
+  //
+  // Marker notes 110/111/112 are modifiers only and never become NoteEvents.
   List<NoteEvent> _convertToNoteEvents(
     List<_RawEvent> rawEvents,
     int ppq,
     List<_TempoChange> tempoMap,
     DrumMapping mapping,
   ) {
-    final result = <NoteEvent>[];
+    // Detect Clone Hero Expert mode: mapping covers note 95 or 99 (CH-specific).
+    final isChExpert = mapping.noteMap.containsKey(95) ||
+                       mapping.noteMap.containsKey(99);
 
+    // Group all note-on events by tick for marker-context resolution.
+    final byTick = <int, List<_NoteRaw>>{};
     for (final raw in rawEvents) {
       if (raw is! _NoteRaw || !raw.isOn) continue;
+      (byTick[raw.tick] ??= []).add(raw);
+    }
 
-      final pad = mapping.getPad(raw.note);
-      if (pad == null) continue; // Unmapped note — skip
+    const markerNotes = {110, 111, 112};
+    final result = <NoteEvent>[];
 
-      final timeSeconds = _tickToSeconds(raw.tick, ppq, tempoMap);
-      final beatPos     = raw.tick / ppq.toDouble(); // simple division kept for compatibility
+    for (final entry in byTick.entries) {
+      final tick  = entry.key;
+      final notes = entry.value;
 
-      result.add(NoteEvent(
-        pad:          pad,
-        midiNote:     raw.note,
-        beatPosition: beatPos,
-        timeSeconds:  timeSeconds,
-        velocity:     raw.velocity,
-      ));
+      // Collect pro-cymbal markers present at this tick.
+      final markers = <int>{};
+      for (final n in notes) {
+        if (markerNotes.contains(n.note)) markers.add(n.note);
+      }
+
+      for (final raw in notes) {
+        if (markerNotes.contains(raw.note)) continue; // modifier only — no NoteEvent
+
+        DrumPad? pad;
+        if (isChExpert) {
+          switch (raw.note) {
+            case 97:  pad = markers.contains(110) ? DrumPad.hihatClosed : DrumPad.tom1;    break;
+            case 98:  pad = markers.contains(111) ? DrumPad.ride        : DrumPad.tom2;    break;
+            case 100: pad = markers.contains(112) ? DrumPad.crash1      : DrumPad.floorTom; break;
+            default:  pad = mapping.getPad(raw.note);
+          }
+        } else {
+          pad = mapping.getPad(raw.note);
+        }
+        if (pad == null) continue;
+
+        result.add(NoteEvent(
+          pad:          pad,
+          midiNote:     raw.note,
+          beatPosition: tick / ppq.toDouble(),
+          timeSeconds:  _tickToSeconds(tick, ppq, tempoMap),
+          velocity:     raw.velocity,
+        ));
+      }
     }
 
     result.sort((a, b) => a.timeSeconds.compareTo(b.timeSeconds));

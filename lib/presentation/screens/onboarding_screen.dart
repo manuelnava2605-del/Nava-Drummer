@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// NavaDrummer — Onboarding Screen  (Fase 4)
+// NavaDrummer — Onboarding Screen
 // Quick Start · Demo Mode · Tutorial · Auto-detección · Celebración
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dart:async';
@@ -11,7 +11,7 @@ import '../../data/datasources/local/midi_engine.dart';
 import '../theme/nava_theme.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Onboarding Flow  (4 pages)
+// Onboarding Flow  (2 pages)
 // ═══════════════════════════════════════════════════════════════════════════
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback onComplete;
@@ -36,18 +36,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       emoji:    '🎮',
       title:    'Como un\nvideojuego',
       subtitle: 'Las notas caen hacia la línea de golpe.\nToca en el momento exacto para conseguir\nPERFECT y construir combo.',
-      cta:      'SIGUIENTE',
-    ),
-    _OnboardPage(
-      emoji:    '🎛️',
-      title:    'MIDI o\nmicrófono',
-      subtitle: 'Conecta tu batería electrónica por USB\no Bluetooth. Si no tienes kit, usa el\nmodo demostración.',
-      cta:      'SIGUIENTE',
-    ),
-    _OnboardPage(
-      emoji:    '✝️',
-      title:    'Canciones\nreales',
-      subtitle: 'Aprende desde himnos de adoración\nhasta rock clásico, funk y metal.\nDe principiante a experto.',
       cta:      'EMPEZAR A TOCAR',
     ),
   ];
@@ -130,7 +118,7 @@ class _OnboardPage {
 
 class _OnboardPageView extends StatelessWidget {
   final _OnboardPage page;
-  const _OnboardPageView({super.key, required this.page});
+  const _OnboardPageView({required this.page});
   @override
   Widget build(BuildContext context) => Padding(
     padding: EdgeInsets.fromLTRB(32, MediaQuery.of(context).padding.top + 48, 32, 0),
@@ -181,7 +169,6 @@ class DemoModeController {
 
   DemoModeController({required this.engine, required this.midiEngine});
 
-  /// Empieza el demo: inyecta hits perfectos desde [notes] con timing real.
   void start(List<NoteEvent> notes) {
     if (_running || notes.isEmpty) return;
     _running = true;
@@ -191,7 +178,6 @@ class DemoModeController {
       final delayMs = (note.timeSeconds * 1000).round();
       Future.delayed(Duration(milliseconds: delayMs), () {
         if (!_running) return;
-        // Inject a fake perfect hit via the MIDI stream
         midiEngine.injectSyntheticEvent(MidiEvent(
           type:            MidiEventType.noteOn,
           channel:         9,

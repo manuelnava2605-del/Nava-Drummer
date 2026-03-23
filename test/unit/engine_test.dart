@@ -1,7 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nava_drummer/domain/entities/entities.dart';
-import 'package:nava_drummer/data/datasources/local/midi_file_parser.dart';
-import 'package:nava_drummer/core/practice_engine.dart';
 
 void main() {
   group('ScoringConfig Tests', () {

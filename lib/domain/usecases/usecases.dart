@@ -5,6 +5,7 @@
 
 import '../entities/entities.dart';
 import '../repositories/repositories.dart';
+import '../../core/notification_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth Use Cases
@@ -118,8 +119,23 @@ class SaveSessionAndUpdateProgressUseCase {
 
     for (final a in achievements) {
       await _users.unlockAchievement(userId, a);
+      final meta = _achievementMeta[a];
+      if (meta != null) {
+        await NotificationService.instance
+            .showAchievementUnlocked(meta.$1, meta.$2);
+      }
     }
   }
+
+  // id → (name, emoji)
+  static const _achievementMeta = <String, (String, String)>{
+    'first_session': ('Primera sesión completada', '🥁'),
+    'perfectionist': ('¡Precisión perfecta!',       '💯'),
+    's_rank':        ('Rango S obtenido',            '⭐'),
+    'combo_king':    ('Combo x50 o más',             '🔥'),
+    'week_warrior':  ('7 días de racha',             '📅'),
+    'level_5':       ('Nivel 5 alcanzado',           '🚀'),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,13 +189,13 @@ class GetTimingCorrectionSuggestionsUseCase {
 
     // Analyze timing tendency (early vs late)
     final scored = session.hitResults
-        .where((r) => r.grade != HitGrade.miss && r.timingDeltaMs != null)
+        .where((r) => r.grade != HitGrade.miss)
         .toList();
 
     if (scored.isEmpty) return suggestions;
 
     final avgDelta = scored
-        .map((r) => r.timingDeltaMs!)
+        .map((r) => r.timingDeltaMs)
         .reduce((a, b) => a + b) / scored.length;
 
     if (avgDelta < -20) {
@@ -212,7 +228,7 @@ class GetTimingCorrectionSuggestionsUseCase {
     // Consistency analysis (std deviation)
     if (scored.length >= 5) {
       final mean    = avgDelta;
-      final stdDev  = _stdDev(scored.map((r) => r.timingDeltaMs!).toList(), mean);
+      final stdDev  = _stdDev(scored.map((r) => r.timingDeltaMs).toList(), mean);
       if (stdDev > 40) {
         suggestions.add(TimingCoachSuggestion(
           type:    SuggestionType.consistency,

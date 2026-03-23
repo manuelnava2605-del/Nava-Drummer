@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../domain/entities/entities.dart';
+import 'secrets.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Product IDs — match exactly what you create in App Store / Play Console
@@ -24,13 +25,8 @@ abstract class ProductIds {
   static const String premiumEntitlement = 'premium';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RevenueCat API Keys — replace with yours from app.revenuecat.com
-// ─────────────────────────────────────────────────────────────────────────────
-abstract class RevenueCatKeys {
-  static const String ios     = 'YOUR_REVENUECAT_IOS_KEY';      // appl_xxxxx
-  static const String android = 'YOUR_REVENUECAT_ANDROID_KEY';  // goog_xxxxx
-}
+// RevenueCat keys live in lib/core/secrets.dart (gitignored).
+// See that file for setup instructions.
 
 // ─────────────────────────────────────────────────────────────────────────────
 class SubscriptionService {

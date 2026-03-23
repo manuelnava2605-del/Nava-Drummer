@@ -1,6 +1,6 @@
 # 🥁 NavaDrummer
 
-App móvil de aprendizaje de batería con MIDI nativo, visualización de notas cayendo (estilo InstaDrum), y catálogo de canciones reales.
+App móvil de aprendizaje de batería con MIDI nativo, visualización de notas cayendo (estilo videojuego), y catálogo de canciones reales en formato Clone Hero / RBN.
 
 ---
 
@@ -29,9 +29,9 @@ firebase deploy --only firestore:rules,storage
 ```
 
 ### 4. Fuentes
-Descargar y colocar en `assets/fonts/`:
-- [Orbitron](https://fonts.google.com/specimen/Orbitron): `Orbitron-Regular.ttf`, `Orbitron-Bold.ttf`
-- [JetBrains Mono](https://www.jetbrains.com/legalnotices/): `JetBrainsMono-Regular.ttf`, `JetBrainsMono-Bold.ttf`
+Deben estar en `assets/fonts/`:
+- **Orbitron**: `Orbitron-Regular.ttf`, `Orbitron-Bold.ttf`
+- **JetBrains Mono**: `JetBrainsMono-Regular.ttf`, `JetBrainsMono-Bold.ttf`
 
 ### 5. Correr
 ```bash
@@ -40,82 +40,120 @@ flutter run
 
 ---
 
-## 🖥️ Panel Admin
-Abrir `admin_panel/index.html` en el navegador (o deployar en Firebase Hosting).
-Actualizar las credenciales de Firebase en el `<script>` al final del archivo.
-
-Solo el owner puede acceder — crear el usuario admin en Firebase Console → Authentication → Add user.
-
----
-
 ## 📁 Estructura del proyecto
 
 ```
 nava_drummer/
-├── android/                    # Plugin nativo Android (MIDI API + BLE)
-├── ios/                        # Plugin nativo iOS (CoreMIDI + CoreBluetooth)
-├── assets/midi/                # 39 archivos MIDI (16 lecciones + 23 canciones reales)
-├── admin_panel/index.html      # Panel web del dueño para gestionar el catálogo
-├── firebase/                   # Reglas de seguridad Firestore + Storage
+├── assets/
+│   ├── midi/                       # MIDI de lecciones de práctica
+│   ├── sounds/                     # Samples de batería
+│   ├── backing_tracks/             # Pistas de acompañamiento
+│   ├── fonts/                      # Orbitron + JetBrains Mono
+│   └── songs/                      # Canciones reales (paquetes Clone Hero/RBN)
+│       ├── songs_manifest.json     # Lista de paquetes a cargar
+│       ├── Coda - Aún/             # song.ini + notes.mid + stems OGG
+│       └── Moenia - No Dices Más/  # song.ini + notes.mid + stems OGG
 ├── lib/
 │   ├── core/
-│   │   ├── practice_engine.dart    # Motor de juego 60 FPS
-│   │   └── firebase_init.dart      # Inicialización Firebase + Crashlytics
+│   │   ├── global_timing_controller.dart  # Reloj global + MathTimingEngine + calibración
+│   │   ├── practice_engine.dart           # Motor de juego 60 FPS
+│   │   └── audio_service.dart             # Reproductor de audio
 │   ├── data/
 │   │   ├── datasources/local/
-│   │   │   ├── midi_engine.dart        # Platform channel MIDI
-│   │   │   ├── midi_file_parser.dart   # Parser SMF binario
-│   │   │   └── audio_hit_detector.dart # Fallback micrófono
-│   │   ├── models/firestore_models.dart
-│   │   └── repositories/firebase_repositories.dart
+│   │   │   ├── midi_engine.dart           # Platform channel MIDI
+│   │   │   ├── midi_file_parser.dart      # Parser SMF binario
+│   │   │   └── song_package_loader.dart   # Carga paquetes Clone Hero/RBN
+│   │   └── song_loader.dart               # Loader dinámico vía manifest JSON
 │   ├── domain/
-│   │   ├── entities/entities.dart   # Todas las entidades del dominio
-│   │   ├── repositories/            # Interfaces abstractas
+│   │   ├── entities/entities.dart         # Todas las entidades del dominio
 │   │   └── usecases/
-│   │       ├── usecases.dart           # Casos de uso + AI coach + lecciones
-│   │       ├── song_catalog.dart       # 16 canciones de práctica
-│   │       └── real_song_catalog.dart  # 23 canciones reales
+│   │       ├── song_catalog.dart          # Lecciones de práctica (NavaSongCatalog)
+│   │       └── real_song_catalog.dart     # Catálogo estático de canciones reales
 │   ├── presentation/
-│   │   ├── bloc/blocs.dart          # AuthBloc, ProgressBloc, SongsBloc
-│   │   ├── screens/                 # 4 pantallas principales
-│   │   ├── widgets/falling_notes_view.dart  # Visualizador 60 FPS
-│   │   └── theme/nava_theme.dart    # Diseño neon oscuro
-│   ├── injection.dart               # Inyección de dependencias
-│   └── main.dart                    # Entry point
-└── test/                        # Unit + Integration + Benchmarks
+│   │   ├── screens/
+│   │   │   ├── onboarding_screen.dart     # Intro de 2 slides
+│   │   │   ├── song_library_screen.dart   # Biblioteca con filtros + búsqueda
+│   │   │   ├── song_detail_screen.dart    # Detalle: elegir JUEGO o PARTITURA
+│   │   │   ├── practice_screen.dart       # Pantalla de práctica (notas cayendo)
+│   │   │   ├── calibration_screen.dart    # Ajuste de latencia (-100 a +100 ms)
+│   │   │   └── dashboard_screen.dart      # Progreso y estadísticas
+│   │   ├── widgets/
+│   │   │   ├── falling_notes_view.dart    # Visualizador 60 FPS
+│   │   │   └── practice_hud.dart          # HUD de práctica
+│   │   └── theme/nava_theme.dart          # Diseño neon oscuro premium
+│   ├── injection.dart                     # Inyección de dependencias
+│   └── main.dart                          # Entry point
 ```
 
 ---
 
-## 🎵 Catálogo de canciones (39 total)
+## 🎵 Catálogo de canciones
 
-### ✝️ Música Cristiana (8)
-| Canción | Artista | BPM |
-|---------|---------|-----|
-| Oceans (Where Feet May Fail) | Hillsong UNITED | 58 |
-| Shout to the Lord | Darlene Zschech | 72 |
-| Cristo Te Necesito | CCM Latino | 68 |
-| Renuévame | Marcos Witt | 75 |
-| Open the Eyes of My Heart | Paul Baloche | 96 |
-| God of Wonders | Steve Hindalong | 104 |
-| How Great Is Our God | Chris Tomlin | 76 |
-| Agnus Dei | Michael W. Smith | 66 |
+### Canciones reales (paquetes Clone Hero / RBN)
 
-### 🎸 Rock Clásico (5) • 🎵 Pop Moderno (4) • 🔥 Metal (3) • 🎷 Funk/Soul (3)
-AC/DC, Nirvana, Beatles, Led Zeppelin, Bruno Mars, MJ, Ed Sheeran, Metallica, Megadeth, Stevie Wonder, James Brown, Earth Wind & Fire
+| Canción | Artista | Dificultad | BPM | Carta |
+|---------|---------|-----------|-----|-------|
+| Aún | Coda | Principiante | 120 | Henry13Hdz |
+| No Dices Más | Moenia | Avanzado | 120 | Henry13Hdz / SkyDown |
 
-### 📚 Lecciones de práctica (16)
-Quarter Notes → Blast Beat — de principiante a experto
+### Lecciones de práctica (NavaSongCatalog)
+
+16 lecciones progresivas: Quarter Notes → Blast Beat — de principiante a experto.
+
+---
+
+## 🎯 Agregar canciones
+
+1. Coloca la carpeta del paquete en `assets/songs/NombreArtista - NombreCancion/`
+2. Asegúrate de que contenga:
+   - `song.ini` — metadatos (name, artist, bpm, diff_drums, genre, pro_drums)
+   - `notes.mid` — MIDI de la batería
+   - `drums.ogg` / otros stems
+3. Agrega la carpeta en `pubspec.yaml` bajo `assets:`:
+   ```yaml
+   - assets/songs/NombreArtista - NombreCancion/
+   ```
+4. Agrega la ruta en `assets/songs/songs_manifest.json`:
+   ```json
+   {
+     "songs": [
+       "assets/songs/Coda - Aún",
+       "assets/songs/Moenia - No Dices Más",
+       "assets/songs/NombreArtista - NombreCancion"
+     ]
+   }
+   ```
+5. `flutter run` — la canción aparece automáticamente en la biblioteca.
 
 ---
 
 ## ⚡ Arquitectura técnica
 
 - **Latencia MIDI**: < 5ms (Dart) + < 15ms (nativo) = < 20ms total
-- **Frame rate**: 60 FPS garantizados (CustomPainter, no rebuilds por frame)
+- **Calibración de usuario**: slider -100 a +100 ms (`GlobalTimingController.userOffsetMicros`)
+- **Ventanas de timing**: PERFECT ±30ms · GOOD ±80ms · OKAY ±140ms
+- **Frame rate**: 60 FPS garantizados (CustomPainter, sin rebuilds por frame)
 - **Timestamps**: microsegundos precisos (CoreMIDI / SystemClock.elapsedRealtimeNanos)
-- **Arquitectura**: Clean Architecture — Presentation (BLoC) → Domain → Data
-- **Threading**: MIDI en THREAD_PRIORITY_AUDIO (Android) / .userInteractive (iOS)
+- **Arquitectura**: Clean Architecture — Presentation → Domain → Data
+- **Carga de canciones**: manifest JSON → `SongLoader` → merge con NavaSongCatalog
+
+---
+
+## 🎮 Flujo de la app
+
+```
+Onboarding (2 slides, solo primera vez)
+  ↓
+DeviceSetup (solo primera vez)
+  ↓
+SongLibraryScreen
+  ↓ tap canción
+SongDetailScreen
+  ↓ tap JUEGO o PARTITURA
+PracticeScreen (landscape)
+  ↓ terminar
+[Paywall si aplica]
+```
 
 ---
 

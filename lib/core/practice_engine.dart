@@ -9,9 +9,8 @@ import 'package:rxdart/rxdart.dart';
 import '../domain/entities/entities.dart';
 import '../domain/entities/song_package.dart';
 import '../data/datasources/local/midi_engine.dart';
-import 'audio_service.dart';
+import 'drum_engine.dart';
 import 'backing_track_service.dart';
-import 'global_timing_controller.dart';
 import 'advanced_matching.dart';
 import 'song_sync_profile.dart';
 import 'sync_diagnostics.dart';
@@ -80,12 +79,15 @@ class PracticeEngine {
   Song? currentSong;
   List<NoteEvent> _notes = [];
   DrumMapping? _mapping;
-  double _tempo = 1.0; // 0.5–1.2
+  double _tempo         = 1.0; // 0.5–1.2 — user-requested rate
+  double _baseTempoFactor = 1.0; // same as _tempo; drift correction always offsets from this
   bool _loop = false;
   bool _hasBackingTrack = false;
   double? _loopStart, _loopEnd;
   int _bpm = 120;
+  // ignore: unused_field
   int _userLevel = 1;
+  // ignore: unused_field
   double _recentAccuracy = 70.0;
 
   // ── Engine state ───────────────────────────────────────────────────────────
@@ -144,6 +146,16 @@ class PracticeEngine {
   // Counter for periodic audio drift correction (every ~2s)
   int _tickCount = 0;
 
+  // Drift correction: gentle speed-nudge timer (cancelled when drift clears)
+  Timer? _driftCorrectionTimer;
+
+  // One-shot timer that fires when audio should call play().
+  // Tracked so stop()/pause() can cancel it and prevent stale play() calls.
+  Timer? _audioDelayTimer;
+
+  // Count-in timers — kept so stop() can cancel them mid count-in
+  final List<Timer> _countInTimers = [];
+
   PracticeEngine({required MidiEngine midiEngine}) : _midi = midiEngine;
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -172,8 +184,11 @@ class PracticeEngine {
     );
     _matcher = ContextAwareMatcher(_timingEngine);
     _stabilizer = AdaptiveMidiStabilizer();
-    _normalizer =
-        DrumNoteNormalizer(brand: _mapping?.brand ?? DrumKitBrand.generic);
+    // Use the active mapping's noteMap as the primary lookup so that
+    // Clone Hero (notes 95-100), Roland TD, and other non-GM kits resolve
+    // correctly. The DrumMappingBrand extension always returns .generic, so
+    // brand-based lookup was a silent no-op — primaryMap fixes this properly.
+    _normalizer = DrumNoteNormalizer(primaryMap: _mapping?.noteMap, brand: DrumKitBrand.generic);
 
     // Apply swing to note timestamps if needed
     if (swingRatio > 0) {
@@ -198,12 +213,17 @@ class PracticeEngine {
     _resetCounters();
     _buildPending();
 
-    // Load backing track if available
-    _hasBackingTrack = await BackingTrackService.instance.load(song);
+    // MIDI-only songs have no bundled backing track.
+    // Package-based songs load OGG stems via loadSongPackage() → loadPackage().
+    _hasBackingTrack = false;
     await BackingTrackService.instance.setTempoFactor(_tempo);
 
     // Load sync profile for this song (authoritative timing parameters)
     _syncProfile = SongSyncRegistry.forSong(song.id);
+    assert(_syncProfile == null || _syncProfile!.audioSeekSeconds >= 0,
+        'Invalid SongSyncProfile: audioSeekSeconds=${_syncProfile?.audioSeekSeconds} must be >= 0');
+    assert(_syncProfile == null || _syncProfile!.audioDelaySeconds >= 0,
+        'Invalid SongSyncProfile: audioDelaySeconds=${_syncProfile?.audioDelaySeconds} must be >= 0');
 
     // Seed diagnostics with BPM info and sync profile
     SyncDiagnostics.instance.configuredBpm = _bpm.toDouble();
@@ -250,77 +270,125 @@ class PracticeEngine {
   // ══════════════════════════════════════════════════════════════════════════
   // PLAYBACK CONTROL
   // ══════════════════════════════════════════════════════════════════════════
+  /// Plays 4 count-in beats then starts the engine on the beat.
+  ///
+  /// All beats and the engine start are scheduled from a single wall-clock
+  /// anchor captured right now — no Future.delayed drift accumulation.
   Future<void> startWithCountIn() async {
     if (_state != EngineState.ready) return;
-
     _setState(EngineState.countIn);
-    final beatMs = (60000 / (_bpm * _tempo)).round();
+    _countInTimers
+      ..forEach((t) => t.cancel())
+      ..clear();
 
-    for (int i = 1; i <= 4; i++) {
-      _countSubject.add(i);
-      await Future.delayed(Duration(milliseconds: beatMs));
+    // Beat duration in microseconds at current tempo
+    final beatUs = (60000000.0 / (_bpm * _tempo)).round();
+
+    // Anchor: the wall-clock epoch from which all timers are scheduled.
+    // Beat i fires at anchor + beatUs × i  (i = 0..3 → beats 1..4).
+    // Engine starts at anchor + beatUs × 4.
+    final anchor = DateTime.now().microsecondsSinceEpoch;
+
+    for (int i = 0; i < 4; i++) {
+      final delayUs = beatUs * i;
+      final beat = i + 1;
+      _countInTimers.add(
+        Timer(Duration(microseconds: delayUs), () {
+          if (_state == EngineState.countIn) _countSubject.add(beat);
+        }),
+      );
     }
 
-    start();
+    // The engine start wall-clock: exactly 4 beats after the anchor.
+    final startWallUs = anchor + beatUs * 4;
+    _countInTimers.add(
+      Timer(Duration(microseconds: beatUs * 4), () => _doStart(startWallUs)),
+    );
   }
 
+  /// Starts immediately (no count-in). Safe to call from paused state too.
   void start() {
     if (_state == EngineState.countIn ||
         _state == EngineState.ready ||
         _state == EngineState.paused) {
-      _startTime =
-          DateTime.fromMicrosecondsSinceEpoch(_clock.currentTimeMicros());
-      _startRef = _clock.currentTimeMicros() - _playUs;
-      _setState(EngineState.playing);
-
-      if (_hasBackingTrack) {
-        _startBackingTrackSynced();
-      }
-
-      _midiSub = _midi.midiEvents.listen(_onMidi);
-      _timer = Timer.periodic(
-        const Duration(microseconds: 16667),
-        (_) => _tick(),
-      );
+      _doStart(DateTime.now().microsecondsSinceEpoch);
     }
   }
 
-  void _startBackingTrackSynced() {
-    final profile = _syncProfile;
+  /// Internal start. [startWallUs] is the exact wall-clock microsecond at which
+  /// chart-time 0 is defined.  For resume, [_playUs] is already non-zero so
+  /// _startRef is adjusted accordingly (startWallUs − _playUs).
+  void _doStart(int startWallUs) {
+    if (_state != EngineState.countIn &&
+        _state != EngineState.ready &&
+        _state != EngineState.paused) return;
 
-    if (profile == null) {
-      unawaited(
-        BackingTrackService.instance
-            .seekTo(0)
-            .then((_) => BackingTrackService.instance.play()),
-      );
-      _subscribeAudioPosition();
-      return;
+    _startTime = DateTime.fromMicrosecondsSinceEpoch(startWallUs);
+    // _playUs may be non-zero on resume; keep it as-is.
+    _startRef = startWallUs - _playUs;
+    _setState(EngineState.playing);
+
+    if (_hasBackingTrack) {
+      _startBackingTrackSynced(startWallUs);
     }
 
-    final seekSec = profile.audioSeekSeconds;
-    final delaySec = profile.audioDelaySeconds;
+    _midiSub = _midi.midiEvents.listen(_onMidi);
+    _timer = Timer.periodic(
+      const Duration(microseconds: 16667),
+      (_) => _tick(),
+    );
+  }
 
-    if (delaySec > 0) {
-      unawaited(
-        BackingTrackService.instance.seekTo(seekSec).then((_) async {
-          await Future.delayed(
-            Duration(microseconds: (delaySec * 1e6).round()),
-          );
-          if (_state == EngineState.playing) {
-            await BackingTrackService.instance.play();
-            _subscribeAudioPosition();
-          }
-        }),
-      );
-    } else {
-      unawaited(
-        BackingTrackService.instance.seekTo(seekSec).then((_) async {
-          await BackingTrackService.instance.play();
-          _subscribeAudioPosition();
-        }),
-      );
+  /// Seeks audio and schedules its playback so that the audio beat-1 lands
+  /// exactly when the chart beat-1 does, based on [startWallUs].
+  ///
+  /// Uses a one-shot [Timer] anchored to [startWallUs] — never Future.delayed.
+  void _startBackingTrackSynced(int startWallUs) {
+    _audioDelayTimer?.cancel();
+    _audioDelayTimer = null;
+
+    final profile   = _syncProfile;
+    final seekSec   = profile?.audioSeekSeconds ?? 0.0;
+    final delayUs   = ((profile?.audioDelaySeconds ?? 0.0) * 1e6).round();
+    final audioStartWallUs = startWallUs + delayUs;
+
+    void firePlay([double? overrideSeekSec]) {
+      if (_state != EngineState.playing) return;
+      final target = overrideSeekSec ?? seekSec;
+      if (overrideSeekSec != null) {
+        // Catch-up: seekTo took longer than the pre-gap; jump to correct position.
+        unawaited(
+          BackingTrackService.instance.seekTo(target).then((_) {
+            if (_state == EngineState.playing) {
+              unawaited(
+                BackingTrackService.instance.play().then((_) => _subscribeAudioPosition()),
+              );
+            }
+          }),
+        );
+      } else {
+        unawaited(
+          BackingTrackService.instance.play().then((_) => _subscribeAudioPosition()),
+        );
+      }
     }
+
+    unawaited(
+      BackingTrackService.instance.seekTo(seekSec).then((_) {
+        final remainingUs = audioStartWallUs - DateTime.now().microsecondsSinceEpoch;
+
+        if (remainingUs <= 0) {
+          // seekTo took longer than the audio pre-gap — play from correct position.
+          final catchUpSec = (seekSec + (-remainingUs / 1e6)).clamp(0.0, double.infinity);
+          firePlay(catchUpSec);
+        } else if (remainingUs <= 2000) {
+          // ≤2ms remaining — fire immediately.
+          firePlay();
+        } else {
+          _audioDelayTimer = Timer(Duration(microseconds: remainingUs), () => firePlay());
+        }
+      }),
+    );
   }
 
   void _subscribeAudioPosition() {
@@ -347,6 +415,10 @@ class PracticeEngine {
     _audioPosSub?.cancel();
     _audioPosSub = null;
     _audioSyncActive = false;
+    _audioDelayTimer?.cancel();
+    _audioDelayTimer = null;
+    _driftCorrectionTimer?.cancel();
+    _driftCorrectionTimer = null;
 
     if (_hasBackingTrack) BackingTrackService.instance.pause();
     _setState(EngineState.paused);
@@ -355,6 +427,8 @@ class PracticeEngine {
   void resume() {
     if (_state != EngineState.paused) return;
 
+    _driftCorrectionTimer?.cancel();
+    _driftCorrectionTimer = null;
     _startRef = _clock.currentTimeMicros() - _playUs;
     _setState(EngineState.playing);
     _midiSub = _midi.midiEvents.listen(_onMidi);
@@ -376,7 +450,8 @@ class PracticeEngine {
             }),
           );
         } else {
-          _startBackingTrackSynced();
+          // Pre-gap: audio starts from the top with its full delay applied.
+          _startBackingTrackSynced(_clock.currentTimeMicros());
         }
       } else {
         unawaited(BackingTrackService.instance.resume());
@@ -386,6 +461,14 @@ class PracticeEngine {
   }
 
   void stop() {
+    // Cancel any pending count-in beats, audio delay, or drift corrections first.
+    for (final t in _countInTimers) { t.cancel(); }
+    _countInTimers.clear();
+    _audioDelayTimer?.cancel();
+    _audioDelayTimer = null;
+    _driftCorrectionTimer?.cancel();
+    _driftCorrectionTimer = null;
+
     _timer?.cancel();
     _midiSub?.cancel();
     _audioPosSub?.cancel();
@@ -403,6 +486,10 @@ class PracticeEngine {
   }
 
   PerformanceSession finish() {
+    _audioDelayTimer?.cancel();
+    _audioDelayTimer = null;
+    _driftCorrectionTimer?.cancel();
+    _driftCorrectionTimer = null;
     _timer?.cancel();
     _midiSub?.cancel();
     _audioPosSub?.cancel();
@@ -481,19 +568,57 @@ class PracticeEngine {
   void _checkAndCorrectAudioDrift() {
     if (_lastAudioUs <= 0) return;
 
-    final audioPosSec = _lastAudioUs / 1e6;
-    final expectedAudioSec =
-        _syncProfile?.audioPositionForChartTime(_playUs / 1e6) ??
-            (_playUs / 1e6);
+    // audioPositionForChartTime returns null while still in the pre-gap
+    // (audio not started yet) — skip correction in that case.
+    final expectedAudioSec = _syncProfile != null
+        ? _syncProfile!.audioPositionForChartTime(_playUs / 1e6)
+        : _playUs / 1e6;
+    if (expectedAudioSec == null) {
+      if (_syncProfile != null && _playUs > 500000) {
+        debugPrint(
+          '[Sync] audioPositionForChartTime() null at ${(_playUs / 1e6).toStringAsFixed(3)}s '
+          '— check SongSyncProfile.audioDelaySeconds=${_syncProfile!.audioDelaySeconds.toStringAsFixed(3)}s',
+        );
+      }
+      return;
+    }
 
-    final drift = (audioPosSec - expectedAudioSec).abs();
-    if (drift > 0.020) {
+    final audioPosSec = _lastAudioUs / 1e6;
+    // Positive drift  → audio is ahead of chart
+    // Negative drift  → audio is behind chart
+    final drift    = audioPosSec - expectedAudioSec;
+    final absDrift = drift.abs();
+
+    if (absDrift > 0.200) {
+      // Gross desync (>200 ms): hard-seek — audible click acceptable here
+      // because we have already drifted far enough to cause missed notes.
+      debugPrint(
+        '[Sync] Hard seek: drift=${(drift * 1000).toStringAsFixed(0)}ms',
+      );
       unawaited(
         BackingTrackService.instance.seekTo(
           expectedAudioSec.clamp(0.0, double.infinity),
         ),
       );
+    } else if (absDrift > 0.020) {
+      // Minor drift (20–200 ms): gentle ±1.5% tempo nudge.
+      // audio behind (drift < 0) → speed audio up; ahead (drift > 0) → slow down.
+      final correction = drift < 0 ? 1.015 : 0.985;
+      debugPrint(
+        '[Sync] Nudge: drift=${(drift * 1000).toStringAsFixed(1)}ms '
+        'speed=${correction.toStringAsFixed(3)}',
+      );
+      unawaited(BackingTrackService.instance.setTempoFactor(_baseTempoFactor * correction));
+
+      // After ~1.3 s the small drift should be absorbed; restore base tempo.
+      _driftCorrectionTimer?.cancel();
+      _driftCorrectionTimer = Timer(const Duration(milliseconds: 1300), () {
+        if (_state == EngineState.playing) {
+          unawaited(BackingTrackService.instance.setTempoFactor(_baseTempoFactor));
+        }
+      });
     }
+    // < 20 ms: within acceptable tolerance — do nothing.
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -502,22 +627,29 @@ class PracticeEngine {
   void _onMidi(MidiEvent raw) {
     if (_state != EngineState.playing) return;
 
+    // ── Step 1: Resolve pad via active mapping (GM / Clone Hero / Roland…)
+    final normalizedPad = _normalizer.normalize(midiNote: raw.note, channel: raw.channel);
+    if (normalizedPad == null) return;
+
+    // ── Step 2: Ghost-note context using resolved pad
     final expectsGhost = AdaptiveMidiStabilizer.nextNoteIsGhost(
-      StandardDrumMaps.generalMidi[raw.note] ?? DrumPad.snare,
+      normalizedPad,
       _pending,
       _playUs / 1000.0,
+      bpm: _bpm,
     );
-    final stable = _stabilizer.process(raw, patternExpectsGhost: expectsGhost);
+
+    // ── Step 3: Stabilise (debounce / jitter-smooth) using resolved pad
+    final stable = _stabilizer.process(raw, normalizedPad, expectsGhost);
     if (stable == null) return;
 
-    final pad = _normalizer.normalize(midiNote: raw.note, channel: raw.channel);
-    if (pad == null) return;
+    // stable.pad is authoritative from here — may differ from normalizedPad
+    // when hi-hat open/closed state overrides the initial resolution.
+    final pad = stable.pad;
 
+    // ── Step 4: Play drum sound for physical kit
     if (raw.inputSource == InputSourceType.connectedDrum) {
-      AudioService.instance.playDrumPad(
-        pad,
-        velocityNorm: raw.velocity / 127.0,
-      );
+      DrumEngine.instance.hit(pad, velocity: raw.velocity);
     }
 
     if (kDebugMode) {
@@ -526,7 +658,7 @@ class PracticeEngine {
       debugPrint(
         '[INPUT] src=$sourceStr pad=${pad.shortName} '
         'note=${raw.note} vel=${raw.velocity} '
-        'arrivalMs=${raw.timestampMicros ~/ 1000} '
+        'smoothedMs=${stable.smoothedTimeMs.toStringAsFixed(1)} '
         'playheadMs=${_playUs ~/ 1000}',
       );
     }
@@ -537,18 +669,18 @@ class PracticeEngine {
     SyncDiagnostics.instance.lastRawArrivalUs = raw.timestampMicros;
     SyncDiagnostics.instance.lastDeviceId = raw.deviceId;
 
-    final hitMs = raw.timestampMicros / 1000.0;
+    // Use the jitter-smoothed timestamp consistently for both flam detection
+    // and matcher input — eliminates the native-vs-global time domain split.
+    final hitMs = stable.smoothedTimeMs;
+    final hitUs = _clock.nativeToGlobal((hitMs * 1000).round());
+
     _recentHits.add(RecentHit(pad: pad, timestampMs: hitMs));
     if (_recentHits.length > 8) _recentHits.removeAt(0);
 
-    if (_matcher.isFlamGhost(hitMs, pad)) {
-      return;
-    }
-
-    _matcher.dynamicWindowMs(_pending, _timingEngine.windowOkayMs);
+    if (_matcher.isFlamGhost(hitMs, pad)) return;
 
     final result = _matcher.match(
-      hitTimestampUs: _clock.nativeToGlobal(raw.timestampMicros),
+      hitTimestampUs: hitUs,
       hitPad: pad,
       hitVelocity: raw.velocity,
       pendingNotes: _pending,
@@ -815,12 +947,12 @@ class PracticeEngine {
   };
 
   void onScreenHit(DrumPad pad, {int velocity = 100}) {
-    if (_state != EngineState.playing) return;
+    // Always play the drum sound — even during count-in or before the engine
+    // starts. DrumEngine.hit() is synchronous fire-and-forget → minimum latency.
+    DrumEngine.instance.hit(pad, velocity: velocity);
 
-    AudioService.instance.playDrumPad(
-      pad,
-      velocityNorm: velocity / 127.0,
-    );
+    // Timing evaluation only applies while the engine is actively playing.
+    if (_state != EngineState.playing) return;
 
     final now = _clock.currentTimeMicros();
     final event = MidiEvent(
@@ -837,6 +969,7 @@ class PracticeEngine {
 
   void setTempoFactor(double f) {
     _tempo = f.clamp(0.5, 1.2);
+    _baseTempoFactor = _tempo;
     if (_hasBackingTrack) {
       unawaited(BackingTrackService.instance.setTempoFactor(_tempo));
     }
@@ -881,6 +1014,12 @@ class PracticeEngine {
       _allDeltas.length >= 3 ? _timingEngine.analyse(_allDeltas) : null;
 
   Future<void> dispose() async {
+    for (final t in _countInTimers) { t.cancel(); }
+    _countInTimers.clear();
+    _audioDelayTimer?.cancel();
+    _audioDelayTimer = null;
+    _driftCorrectionTimer?.cancel();
+    _driftCorrectionTimer = null;
     _timer?.cancel();
     _midiSub?.cancel();
     _audioPosSub?.cancel();
@@ -897,11 +1036,7 @@ class PracticeEngine {
   }
 }
 
-// ── DrumMapping extension ─────────────────────────────────────────────────────
+// ── Utility ───────────────────────────────────────────────────────────────────
 void unawaited(Future<void> f) {}
 
 bool get hasBackingTrack => false; // per engine instance
-
-extension DrumMappingBrand on DrumMapping {
-  DrumKitBrand get brand => DrumKitBrand.generic;
-}

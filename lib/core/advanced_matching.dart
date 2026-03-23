@@ -53,7 +53,9 @@ class ContextAwareMatcher {
   final MathTimingEngine _timing;
 
   int?           _lastMatchedIdx;       // index of last matched note in full list
+  // ignore: unused_field
   DrumPad?       _lastMatchedPad;
+  // ignore: unused_field
   double?        _lastMatchedMs;
 
   // History: for each pad, sliding buffer of last 8 time-deltas to that pad
@@ -352,15 +354,22 @@ class AdaptiveMidiStabilizer {
   HiHatState _hiHatState = HiHatState.closed;
 
   // ── Process ────────────────────────────────────────────────────────────────
-  StabilizedEvent? process(MidiEvent raw, {bool patternExpectsGhost = false}) {
+  /// Stabilize [raw].
+  ///
+  /// [pad] MUST be supplied by the caller after resolving through
+  /// DrumNoteNormalizer. This ensures Clone Hero (95-100), Roland TD, and
+  /// other non-GM mappings are handled correctly.
+  ///
+  /// Returns null when [pad] is null — the caller is responsible for mapping.
+  StabilizedEvent? process(MidiEvent raw, [DrumPad? pad, bool patternExpectsGhost = false]) {
     if (!raw.isNoteOn) return null;
     if (raw.velocity < _minVelocity) return null;
-
-    final pad = StandardDrumMaps.generalMidi[raw.note];
     if (pad == null) return null;
 
+    final resolvedPad = pad;
+
     final rawMs  = raw.timestampMicros / 1000.0;
-    final cat    = _category(pad);
+    final cat    = _category(resolvedPad);
 
     // ── Adaptive debounce = f(velocity, padType) ──────────────────────────
     //    High velocity hits need less debounce (likely intentional)
@@ -368,28 +377,27 @@ class AdaptiveMidiStabilizer {
     final velFactor  = 1.0 - (raw.velocity / 127.0) * 0.4; // 0.6–1.0
     final debounceMs = (_baseDebounce[cat] ?? 10.0) * velFactor;
 
-    final last = _lastHitMs[pad];
+    final last = _lastHitMs[resolvedPad];
     if (last != null && (rawMs - last) < debounceMs) return null;
-    _lastHitMs[pad] = rawMs;
+    _lastHitMs[resolvedPad] = rawMs;
 
     // ── Ghost note filter ─────────────────────────────────────────────────
     //    Very low velocity hits filtered UNLESS pattern expects ghost note
     if (raw.velocity < _ghostVelocity && !patternExpectsGhost) return null;
 
     // ── Jitter smoothing ──────────────────────────────────────────────────
-    final smoothedMs = _smooth(pad, rawMs);
+    final smoothedMs = _smooth(resolvedPad, rawMs);
 
     // ── Hi-hat resolution ─────────────────────────────────────────────────
-    DrumPad resolvedPad = pad;
-    if (pad == DrumPad.hihatClosed || pad == DrumPad.hihatOpen) {
-      resolvedPad = _resolveHiHat(raw.velocity);
-    }
+    final finalPad = (resolvedPad == DrumPad.hihatClosed || resolvedPad == DrumPad.hihatOpen)
+        ? _resolveHiHat(raw.velocity)
+        : resolvedPad;
 
     return StabilizedEvent(
       originalEvent:  raw,
-      pad:            resolvedPad,
+      pad:            finalPad,
       smoothedTimeMs: smoothedMs,
-      hiHatState:     resolvedPad == DrumPad.hihatClosed || resolvedPad == DrumPad.hihatOpen
+      hiHatState:     finalPad == DrumPad.hihatClosed || finalPad == DrumPad.hihatOpen
           ? _hiHatState : null,
     );
   }
@@ -429,10 +437,11 @@ class AdaptiveMidiStabilizer {
   }
 
   /// Returns whether the next expected note on [pad] is a ghost note (low velocity).
-  static bool nextNoteIsGhost(DrumPad pad, List<PendingNote> pending, double playheadMs) {
+  static bool nextNoteIsGhost(DrumPad pad, List<PendingNote> pending, double playheadMs, {int bpm = 120}) {
+    final windowMs = math.min(15.0, (60000.0 / bpm) * 0.25);
     for (final p in pending) {
       if (p.matched) continue;
-      if ((p.expectedMs - playheadMs).abs() < 100 && p.pad == pad) {
+      if ((p.expectedMs - playheadMs).abs() < windowMs && p.pad == pad) {
         return p.velocity < 40;
       }
     }
@@ -446,17 +455,33 @@ enum _PadCategory { kick, snare, hihat, cymbal, tom }
 // DrumNoteNormalizer (unchanged from previous — kept for single import)
 // ═══════════════════════════════════════════════════════════════════════════
 class DrumNoteNormalizer {
-  final DrumKitBrand _brand;
+  /// The active song/device mapping (GM, Clone Hero, Roland TD, etc.).
+  /// Checked before the brand map and GM fallback.
+  final Map<int, DrumPad> _primaryMap;
+
+  /// Brand-specific map (e.g. Roland TD, Alesis). Falls through to GM.
+  final Map<int, DrumPad> _brandMap;
+
   final Map<int, DrumPad> _userOverrides = {};
 
-  DrumNoteNormalizer({DrumKitBrand brand = DrumKitBrand.generic}) : _brand = brand;
+  /// [primaryMap] — [DrumMapping.noteMap] for the active song/device.
+  /// [brand]      — physical kit brand for a secondary brand-specific lookup.
+  DrumNoteNormalizer({
+    Map<int, DrumPad>? primaryMap,
+    DrumKitBrand brand = DrumKitBrand.generic,
+  })  : _primaryMap = primaryMap ?? const {},
+        _brandMap   = StandardDrumMaps.forBrand(brand);
 
   DrumPad? normalize({required int midiNote, required int channel}) {
-    // Accept all MIDI channels — some controllers use channels other than 9/10
+    // 1. Per-user pad overrides (highest priority)
     if (_userOverrides.containsKey(midiNote)) return _userOverrides[midiNote];
-    final map = StandardDrumMaps.forBrand(_brand);
-    if (map.containsKey(midiNote)) return map[midiNote];
+    // 2. Active song/device mapping (Clone Hero, Roland TD, custom, …)
+    if (_primaryMap.containsKey(midiNote)) return _primaryMap[midiNote];
+    // 3. Brand-specific map (Roland TD-17, Alesis, etc.)
+    if (_brandMap.containsKey(midiNote)) return _brandMap[midiNote];
+    // 4. General MIDI fallback
     if (StandardDrumMaps.generalMidi.containsKey(midiNote)) return StandardDrumMaps.generalMidi[midiNote];
+    // 5. Heuristic range-based guess
     return _heuristic(midiNote);
   }
 

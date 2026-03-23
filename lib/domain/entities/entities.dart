@@ -271,6 +271,57 @@ class Song extends Equatable {
   /// True when this song is loaded from a Clone Hero / RBN song package.
   bool get isPackageBased => packageAssetDir != null;
 
+  /// True when packageAssetDir points to a Firebase Storage path (remote song).
+  /// Remote songs must be downloaded before practice can start.
+  bool get isRemoteSong =>
+      packageAssetDir != null && !packageAssetDir!.startsWith('assets/') && !packageAssetDir!.startsWith('/');
+
+  /// True when packageAssetDir points to a local filesystem path (downloaded).
+  bool get isLocalFile =>
+      packageAssetDir != null && packageAssetDir!.startsWith('/');
+
+  Song copyWith({
+    String?           id,
+    String?           title,
+    String?           artist,
+    Difficulty?       difficulty,
+    Genre?            genre,
+    int?              bpm,
+    Duration?         duration,
+    String?           midiAssetPath,
+    String?           coverArtUrl,
+    bool?             isUnlocked,
+    int?              xpReward,
+    String?           description,
+    String?           techniqueTag,
+    String?           genreLabel,
+    List<SongSection>? sections,
+    String?           scoreAssetPath,
+    String?           timeSignature,
+    int?              beatsPerBar,
+    String?           packageAssetDir,
+  }) => Song(
+    id:             id             ?? this.id,
+    title:          title          ?? this.title,
+    artist:         artist         ?? this.artist,
+    difficulty:     difficulty     ?? this.difficulty,
+    genre:          genre          ?? this.genre,
+    bpm:            bpm            ?? this.bpm,
+    duration:       duration       ?? this.duration,
+    midiAssetPath:  midiAssetPath  ?? this.midiAssetPath,
+    coverArtUrl:    coverArtUrl    ?? this.coverArtUrl,
+    isUnlocked:     isUnlocked     ?? this.isUnlocked,
+    xpReward:       xpReward       ?? this.xpReward,
+    description:    description    ?? this.description,
+    techniqueTag:   techniqueTag   ?? this.techniqueTag,
+    genreLabel:     genreLabel     ?? this.genreLabel,
+    sections:       sections       ?? this.sections,
+    scoreAssetPath: scoreAssetPath ?? this.scoreAssetPath,
+    timeSignature:  timeSignature  ?? this.timeSignature,
+    beatsPerBar:    beatsPerBar    ?? this.beatsPerBar,
+    packageAssetDir: packageAssetDir ?? this.packageAssetDir,
+  );
+
   @override List<Object?> get props => [id];
 }
 

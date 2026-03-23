@@ -1,11 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // NavaDrummer — Falling Notes View  (InstaDrum visual style, smooth render)
 // ─────────────────────────────────────────────────────────────────────────────
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../domain/entities/entities.dart';
 import '../../core/practice_engine.dart';
 import '../../core/global_timing_controller.dart';
+import '../../core/sync_diagnostics.dart';
+import '../../core/drum_lane_mapping.dart';
 import '../theme/nava_theme.dart';
 
 class FallingNotesView extends StatefulWidget {
@@ -45,6 +48,7 @@ class _FallingNotesViewState extends State<FallingNotesView>
 
   late AnimationController       _controller;
   final RenderPlayheadInterpolator _interp = RenderPlayheadInterpolator();
+  StreamSubscription<double>? _playheadSub;
   Offset _shakeOffset = Offset.zero;
 
   final List<_PadFlash>   _padFlashes = [];
@@ -57,9 +61,7 @@ class _FallingNotesViewState extends State<FallingNotesView>
     _controller = AnimationController(
         vsync: this, duration: const Duration(seconds: 1))..repeat();
 
-    widget.playheadStream.listen((t) {
-      _interp.onEngineUpdate(t);
-    });
+    _playheadSub = widget.playheadStream.listen(_interp.onEngineUpdate);
     widget.hitResultStream.listen(_onHit);
   }
 
@@ -72,6 +74,7 @@ class _FallingNotesViewState extends State<FallingNotesView>
   void _onHit(HitResult r) {
     final now   = DateTime.now();
     final flash = _PadFlash(pad: r.expected.pad, grade: r.grade, createdAt: now);
+    if (_padFlashes.length >= 14) _padFlashes.removeAt(0);
     _padFlashes.add(flash);
     Future.delayed(const Duration(milliseconds: 650), () {
       if (mounted) setState(() => _padFlashes.remove(flash));
@@ -119,22 +122,24 @@ class _FallingNotesViewState extends State<FallingNotesView>
     }
     _particles.removeWhere(
         (p) => now.difference(p.createdAt).inMilliseconds > 900);
+    if (_particles.length > 120) {
+      _particles.removeRange(0, _particles.length - 120);
+    }
   }
 
   @override
-  void dispose() { _controller.dispose(); super.dispose(); }
-
-  /// Maps a tap position to the [DrumPad] in the bottom pad area.
-  /// The pad area occupies the lower [hitLinePosition] fraction of the screen.
-  /// Each of the 7 lanes occupies an equal horizontal slice.
-  static const _lanes = _NotesPainter._lanesConst;
+  void dispose() {
+    _playheadSub?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
 
   DrumPad? _padForTap(Offset localPos, Size size) {
     final hitY = size.height * (1 - widget.hitLinePosition);
-    if (localPos.dy < hitY) return null; // tap in the notes area — ignore
-    final laneW = size.width / _lanes.length;
-    final li    = (localPos.dx / laneW).floor().clamp(0, _lanes.length - 1);
-    return _lanes[li];
+    if (localPos.dy < hitY) return null;
+    final laneW = size.width / kDrumLanes.length;
+    final li    = (localPos.dx / laneW).floor().clamp(0, kDrumLanes.length - 1);
+    return kDrumLanes[li];
   }
 
   @override
@@ -152,18 +157,24 @@ class _FallingNotesViewState extends State<FallingNotesView>
         },
         child: AnimatedBuilder(
           animation: _controller,
-          builder: (_, __) => CustomPaint(
-            painter: _NotesPainter(
-              noteEvents:  widget.noteEvents,
-              playhead:    _interp.smoothSeconds,
-              lookAhead:   widget.lookAheadSeconds,
-              hitLinePos:  widget.hitLinePosition,
-              padFlashes:  List.from(_padFlashes),
-              particles:   List.from(_particles),
-              now:         DateTime.now(),
-            ),
-            child: const SizedBox.expand(),
-          ),
+          builder: (_, __) {
+            final ph = _interp.smoothSeconds;
+            // Publish the interpolated render playhead to the diagnostics
+            // overlay so it can be compared against audio and engine positions.
+            SyncDiagnostics.instance.renderPlayheadSec = ph;
+            return CustomPaint(
+              painter: _NotesPainter(
+                noteEvents:  widget.noteEvents,
+                playhead:    ph,
+                lookAhead:   widget.lookAheadSeconds,
+                hitLinePos:  widget.hitLinePosition,
+                padFlashes:  List.from(_padFlashes),
+                particles:   List.from(_particles),
+                now:         DateTime.now(),
+              ),
+              child: const SizedBox.expand(),
+            );
+          },
         ),
       ),
     );
@@ -182,18 +193,7 @@ class _NotesPainter extends CustomPainter {
   final List<_SqParticle> particles;
   final DateTime         now;
 
-  static const _lanesConst = [
-    DrumPad.hihatClosed,
-    DrumPad.crash1,
-    DrumPad.snare,
-    DrumPad.kick,
-    DrumPad.tom1,
-    DrumPad.tom2,
-    DrumPad.floorTom,
-  ];
-  // ignore: unused_field
-  static const _lanes     = _lanesConst;
-  static const _laneNames = ['HH', 'CRASH', 'SNARE', 'KICK', 'TOM 1', 'TOM 2', 'FLOOR'];
+  // Lane layout and names come from drum_lane_mapping.dart (single source of truth).
 
   _NotesPainter({
     required this.noteEvents, required this.playhead, required this.lookAhead,
@@ -207,7 +207,7 @@ class _NotesPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final padAreaH = size.height * hitLinePos;
     final hitY     = size.height - padAreaH;
-    final laneW    = size.width / _lanes.length;
+    final laneW    = size.width / kDrumLanes.length;
 
     _drawBg(canvas, size);
     _drawLaneBgs(canvas, size, hitY, laneW);
@@ -227,8 +227,8 @@ class _NotesPainter extends CustomPainter {
   }
 
   void _drawLaneBgs(Canvas canvas, Size size, double hitY, double laneW) {
-    for (int i = 0; i < _lanes.length; i++) {
-      final color = NavaTheme.padColor(_lanes[i]);
+    for (int i = 0; i < kDrumLanes.length; i++) {
+      final color = NavaTheme.padColor(kDrumLanes[i]);
       canvas.drawRect(
         Rect.fromLTWH(i * laneW, 0, laneW, hitY),
         Paint()..shader = LinearGradient(
@@ -246,7 +246,7 @@ class _NotesPainter extends CustomPainter {
 
   void _drawLaneDividers(Canvas canvas, Size size, double laneW) {
     final p = Paint()..color = const Color(0xFF252D3D)..strokeWidth = 1.0;
-    for (int i = 1; i < _lanes.length; i++) {
+    for (int i = 1; i < kDrumLanes.length; i++) {
       canvas.drawLine(Offset(i * laneW, 0), Offset(i * laneW, size.height), p);
     }
   }
@@ -259,28 +259,13 @@ class _NotesPainter extends CustomPainter {
       if (note.timeSeconds < wStart) continue;
       if (note.timeSeconds > wEnd)   break;
 
-      var li = _lanes.indexOf(note.pad);
-      if (li < 0) { li = _nearestLane(note.pad); if (li < 0) continue; }
+      final li = drumLaneIndex(note.pad);
+      if (li < 0) continue;
 
       final progress = (note.timeSeconds - playhead) / lookAhead;
       final y        = hitY - (hitY * progress);
       final cx       = li * laneW + laneW / 2;
       _drawRectNote(canvas, cx, y, laneW, note);
-    }
-  }
-
-  int _nearestLane(DrumPad pad) {
-    switch (pad) {
-      case DrumPad.hihatOpen:   return 0;
-      case DrumPad.hihatPedal:  return 0;
-      case DrumPad.crash2:      return 1;
-      case DrumPad.ride:        return 1;
-      case DrumPad.rideBell:    return 1;
-      case DrumPad.rimshot:     return 2;
-      case DrumPad.crossstick:  return 2;
-      case DrumPad.tom2:        return 5;
-      case DrumPad.tom3:        return 6;
-      default: return -1;
     }
   }
 
@@ -326,10 +311,10 @@ class _NotesPainter extends CustomPainter {
     const noteW  = _noteW;
     const noteH  = _noteH;
     const radius = Radius.circular(5);
-    for (int i = 0; i < _lanes.length; i++) {
+    for (int i = 0; i < kDrumLanes.length; i++) {
       final cx    = i * laneW + laneW / 2;
-      final color = NavaTheme.padColor(_lanes[i]);
-      final flash = padFlashes.where((f) => f.pad == _lanes[i]).firstOrNull;
+      final color = NavaTheme.padColor(kDrumLanes[i]);
+      final flash = padFlashes.where((f) => f.pad == kDrumLanes[i]).firstOrNull;
       final hitT  = flash != null
           ? (1 - now.difference(flash.createdAt).inMilliseconds / 450.0).clamp(0.0, 1.0)
           : 0.0;
@@ -354,11 +339,11 @@ class _NotesPainter extends CustomPainter {
     final padCY    = hitY + padAreaH * 0.50;
     final padR     = math.min(laneW * 0.42, padAreaH * 0.46);
 
-    for (int i = 0; i < _lanes.length; i++) {
+    for (int i = 0; i < kDrumLanes.length; i++) {
       final cx    = i * laneW + laneW / 2;
-      final pad   = _lanes[i];
+      final pad   = kDrumLanes[i];
       final color = NavaTheme.padColor(pad);
-      final name  = _laneNames[i];
+      final name  = kDrumLaneNames[i];
 
       final flash = padFlashes.where((f) => f.pad == pad).firstOrNull;
       final ageMs = flash != null ? now.difference(flash.createdAt).inMilliseconds : 9999;
@@ -416,7 +401,7 @@ class _NotesPainter extends CustomPainter {
       final opacity = (1 - t * t).clamp(0.0, 1.0);
       final dist    = p.speed * (ageMs / 1000.0);
       final gravity = 200 * t * t;
-      final li      = _lanes.indexOf(p.pad);
+      final li      = drumLaneIndex(p.pad);
       final padAreaH = size.height - hitY;
       final startX  = li >= 0 ? li * laneW + laneW / 2 : size.width / 2;
       final startY  = hitY + padAreaH * 0.50;
@@ -438,8 +423,7 @@ class _NotesPainter extends CustomPainter {
       if (ageMs > 600) continue;
       final opacity = (1 - ageMs / 600.0).clamp(0.0, 1.0);
       final rise    = -52.0 * (ageMs / 600.0);
-      var li = _lanes.indexOf(flash.pad);
-      if (li < 0) li = _nearestLane(flash.pad);
+      final li = drumLaneIndex(flash.pad);
       if (li < 0) continue;
       final cx = li * laneW + laneW / 2;
       final isPerfect = flash.grade == HitGrade.perfect;

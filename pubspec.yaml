@@ -31,9 +31,13 @@ dependencies:
   # In-App Purchases (RevenueCat)
   purchases_flutter: ^6.20.2
 
+  # Screen wake lock
+  wakelock_plus: ^1.1.4
+
   # Audio
-  just_audio: ^0.9.36
+  just_audio: ^0.9.36      # backing tracks (long-form streaming) — keep
   audio_session: ^0.1.18
+  soundpool: ^2.3.1        # drum one-shots (low-latency game audio)
 
   # MIDI
   plugin_platform_interface: ^2.1.6
@@ -59,6 +63,7 @@ dependencies:
 
   # Notifications
   flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
 
   # Utils
   uuid: ^4.2.2
@@ -93,13 +98,26 @@ flutter:
   assets:
     - assets/midi/
     - assets/sounds/
+    - assets/sounds/drums/kick/
+    - assets/sounds/drums/snare/
+    - assets/sounds/drums/hihat_closed/
+    - assets/sounds/drums/hihat_open/
+    - assets/sounds/drums/hihat_pedal/
+    - assets/sounds/drums/crash/
+    - assets/sounds/drums/crash2/
+    - assets/sounds/drums/ride/
+    - assets/sounds/drums/ride_bell/
+    - assets/sounds/drums/tom1/
+    - assets/sounds/drums/tom2/
+    - assets/sounds/drums/floor_tom/
+    - assets/sounds/drums/rimshot/
+    - assets/sounds/drums/crossstick/
     - assets/score/
-    - assets/lessons/
     - assets/fonts/
     - assets/icon/
-    - assets/backing_tracks/
-    # ── Song Packages (Clone Hero / RBN format) ──────────────────────────
-    - assets/songs/aun_coda/
+    # songs_manifest.json — fallback offline catalog
+    # Real song packages viven en Firebase Storage (no bundleados)
+    - assets/songs/
 
   fonts:
     - family: DrummerDisplay

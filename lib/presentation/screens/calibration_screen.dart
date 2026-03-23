@@ -40,8 +40,6 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-
-            // ── TITLE ─────────────────────────────
             const Text(
               'AUDIO / INPUT OFFSET',
               style: TextStyle(
@@ -51,9 +49,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                 letterSpacing: 2,
               ),
             ),
-
             const SizedBox(height: 8),
-
             const Text(
               'Adjust until your hits feel perfectly in sync with the music.',
               style: TextStyle(
@@ -62,10 +58,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                 color: NavaTheme.textSecondary,
               ),
             ),
-
             const SizedBox(height: 32),
-
-            // ── VALUE DISPLAY ─────────────────────
             Center(
               child: Text(
                 '${_offsetMs.toStringAsFixed(0)} ms',
@@ -79,10 +72,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 24),
-
-            // ── SLIDER ────────────────────────────
             Slider(
               min: -100,
               max: 100,
@@ -90,22 +80,16 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
               value: _offsetMs,
               onChanged: _updateOffset,
             ),
-
             const SizedBox(height: 12),
-
-            // ── LABELS ────────────────────────────
-            Row(
+            const Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: const [
+              children: [
                 Text('-100 ms', style: TextStyle(color: NavaTheme.textMuted)),
                 Text('0', style: TextStyle(color: NavaTheme.textMuted)),
                 Text('+100 ms', style: TextStyle(color: NavaTheme.textMuted)),
               ],
             ),
-
             const SizedBox(height: 40),
-
-            // ── HELP ──────────────────────────────
             const Text(
               'HOW TO CALIBRATE',
               style: TextStyle(
@@ -115,12 +99,10 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                 letterSpacing: 2,
               ),
             ),
-
             const SizedBox(height: 8),
-
             const Text(
-              '• If you hear the sound BEFORE you hit → move slider LEFT\n'
-              '• If you hear the sound AFTER you hit → move slider RIGHT\n'
+              '• If you hear the sound BEFORE you hit -> move slider LEFT\n'
+              '• If you hear the sound AFTER you hit -> move slider RIGHT\n'
               '• Goal: hits feel perfectly aligned with music',
               style: TextStyle(
                 fontFamily: 'DrummerBody',
@@ -129,10 +111,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                 height: 1.5,
               ),
             ),
-
             const Spacer(),
-
-            // ── BUTTONS ───────────────────────────
             Row(
               children: [
                 Expanded(

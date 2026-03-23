@@ -102,6 +102,12 @@
 @import shared_preferences_foundation;
 #endif
 
+#if __has_include(<soundpool/SoundpoolPlugin.h>)
+#import <soundpool/SoundpoolPlugin.h>
+#else
+@import soundpool;
+#endif
+
 #if __has_include(<sqflite_darwin/SqflitePlugin.h>)
 #import <sqflite_darwin/SqflitePlugin.h>
 #else
@@ -112,6 +118,12 @@
 #import <url_launcher_ios/URLLauncherPlugin.h>
 #else
 @import url_launcher_ios;
+#endif
+
+#if __has_include(<wakelock_plus/WakelockPlusPlugin.h>)
+#import <wakelock_plus/WakelockPlusPlugin.h>
+#else
+@import wakelock_plus;
 #endif
 
 #if __has_include(<webview_flutter_wkwebview/WebViewFlutterPlugin.h>)
@@ -139,8 +151,10 @@
   [PathProviderPlugin registerWithRegistrar:[registry registrarForPlugin:@"PathProviderPlugin"]];
   [PurchasesFlutterPlugin registerWithRegistrar:[registry registrarForPlugin:@"PurchasesFlutterPlugin"]];
   [SharedPreferencesPlugin registerWithRegistrar:[registry registrarForPlugin:@"SharedPreferencesPlugin"]];
+  [SoundpoolPlugin registerWithRegistrar:[registry registrarForPlugin:@"SoundpoolPlugin"]];
   [SqflitePlugin registerWithRegistrar:[registry registrarForPlugin:@"SqflitePlugin"]];
   [URLLauncherPlugin registerWithRegistrar:[registry registrarForPlugin:@"URLLauncherPlugin"]];
+  [WakelockPlusPlugin registerWithRegistrar:[registry registrarForPlugin:@"WakelockPlusPlugin"]];
   [WebViewFlutterPlugin registerWithRegistrar:[registry registrarForPlugin:@"WebViewFlutterPlugin"]];
 }
 

@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "Offline fallback catalog for songs stored in Firebase Storage.",
+    "Format: each entry is a path to a bundled song package directory",
+    "that contains a song.ini file (e.g., 'assets/songs/te_quiero_hombres_g').",
+    "",
+    "Production songs come from Firestore (Songs collection) + Firebase Storage.",
+    "Lesson songs (NavaSongCatalog) are always available in Dart code.",
+    "",
+    "To add an offline-bundled song:",
+    "  1. Add the song package folder under assets/songs/<id>/",
+    "  2. Add '<id>' to the 'songs' array below.",
+    "  3. Register the folder in pubspec.yaml under flutter.assets.",
+    "",
+    "To seed Firestore with production songs, run: node scripts/seed_songs.js"
+  ],
+  "songs": []
+}

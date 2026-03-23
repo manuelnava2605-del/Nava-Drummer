@@ -6,14 +6,23 @@ import '../../core/analytics_service.dart';
 import '../theme/nava_theme.dart';
 
 class DashboardScreen extends StatefulWidget {
-  final UserProgress progress;
-  const DashboardScreen({super.key, required this.progress});
+  final UserProgress               progress;
+  final List<PerformanceSession>   recentSessions;
+  final Map<DateTime, double>      weeklyAccuracy;
+
+  const DashboardScreen({
+    super.key,
+    required this.progress,
+    this.recentSessions = const [],
+    this.weeklyAccuracy = const {},
+  });
   @override State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
   UserProgress get progress => widget.progress;
   List<DailyStats> _dailyStats = [];
+  // ignore: unused_field
   bool _loadingStats = true;
 
   @override
@@ -23,6 +32,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadStats() async {
+    // If real data was passed from Firestore, skip local fetch
+    if (widget.weeklyAccuracy.isNotEmpty) {
+      if (mounted) setState(() => _loadingStats = false);
+      return;
+    }
     try {
       final stats = await AnalyticsService.instance.getDailyStats(
           progress.userId, days: 7);
@@ -32,7 +46,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  /// Build a 7-day accuracy list from a Map<DateTime, double>.
+  List<double> _buildWeeklyFromMap(Map<DateTime, double> map) {
+    final now = DateTime.now();
+    return List.generate(7, (i) {
+      final day = DateTime(now.year, now.month, now.day - 6 + i);
+      final entries = map.entries.where((e) =>
+          e.key.year == day.year &&
+          e.key.month == day.month &&
+          e.key.day == day.day);
+      if (entries.isEmpty) return 0.0;
+      return entries.map((e) => e.value).reduce((a, b) => a + b) / entries.length;
+    });
+  }
+
   List<double> get _weeklyAccuracy {
+    if (widget.weeklyAccuracy.isNotEmpty) {
+      return _buildWeeklyFromMap(widget.weeklyAccuracy);
+    }
     if (_dailyStats.isEmpty) return [0,0,0,0,0,0,0];
     return _dailyStats.map((s) => s.avgAccuracy).toList();
   }
@@ -333,8 +364,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildRecentActivity() {
-    final recentSongs = progress.songBestScores.entries.take(3).toList();
-    if (recentSongs.isEmpty) return const SizedBox.shrink();
+    // Prefer real Firestore sessions; fall back to songBestScores map
+    final hasSessions = widget.recentSessions.isNotEmpty;
+    final hasFallback = progress.songBestScores.isNotEmpty;
+    if (!hasSessions && !hasFallback) return const SizedBox.shrink();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -344,29 +377,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
           color: NavaTheme.textSecondary, letterSpacing: 2,
         )),
         const SizedBox(height: 14),
-        ...recentSongs.map((entry) => Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: NavaTheme.surfaceCard,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: NavaTheme.neonCyan.withOpacity(0.1)),
-          ),
-          child: Row(
-            children: [
+
+        if (hasSessions)
+          ...widget.recentSessions.take(5).map((s) => _SessionTile(session: s))
+        else
+          ...progress.songBestScores.entries.take(3).map((e) => Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: NavaTheme.surfaceCard,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NavaTheme.neonCyan.withOpacity(0.1)),
+            ),
+            child: Row(children: [
               const Icon(Icons.music_note, color: NavaTheme.neonCyan, size: 20),
               const SizedBox(width: 12),
-              Expanded(
-                child: Text(entry.key, style: const TextStyle(
-                  fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textPrimary,
-                )),
-              ),
-              Text(_formatNumber(entry.value), style: const TextStyle(
-                fontFamily: 'DrummerDisplay', fontSize: 14, color: NavaTheme.neonGold,
-              )),
-            ],
-          ),
-        )),
+              Expanded(child: Text(e.key, style: const TextStyle(
+                fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textPrimary))),
+              Text(_formatNumber(e.value), style: const TextStyle(
+                fontFamily: 'DrummerDisplay', fontSize: 14, color: NavaTheme.neonGold)),
+            ]),
+          )),
       ],
     ).animate().fadeIn(delay: 500.ms);
   }
@@ -452,5 +483,63 @@ class _AchievementTile extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+// ── Real session tile ─────────────────────────────────────────────────────────
+class _SessionTile extends StatelessWidget {
+  final PerformanceSession session;
+  const _SessionTile({required this.session});
+
+  Color get _gradeColor {
+    switch (session.letterGrade) {
+      case 'S': return NavaTheme.neonCyan;
+      case 'A': return NavaTheme.neonGreen;
+      case 'B': return NavaTheme.neonGold;
+      case 'C': return const Color(0xFFFF8C00);
+      default:  return NavaTheme.hitMiss;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    decoration: BoxDecoration(
+      color: NavaTheme.surfaceCard,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: _gradeColor.withOpacity(0.2)),
+    ),
+    child: Row(children: [
+      // Grade badge
+      Container(
+        width: 36, height: 36,
+        decoration: BoxDecoration(
+          color: _gradeColor.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _gradeColor.withOpacity(0.4)),
+        ),
+        child: Center(child: Text(session.letterGrade, style: TextStyle(
+          fontFamily: 'DrummerDisplay', fontSize: 14,
+          color: _gradeColor, fontWeight: FontWeight.bold))),
+      ),
+      const SizedBox(width: 12),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(session.song.title, style: const TextStyle(
+          fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textPrimary,
+          fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 2),
+        Text(
+          '${session.accuracyPercent.toStringAsFixed(1)}%  ·  ${session.maxCombo}x combo',
+          style: const TextStyle(fontFamily: 'DrummerBody', fontSize: 10,
+              color: NavaTheme.textMuted)),
+      ])),
+      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+        Text('${session.xpEarned} XP', style: const TextStyle(
+          fontFamily: 'DrummerDisplay', fontSize: 13, color: NavaTheme.neonGold)),
+        Text('${session.totalScore}pts', style: const TextStyle(
+          fontFamily: 'DrummerBody', fontSize: 10, color: NavaTheme.textMuted)),
+      ]),
+    ]),
   );
 }

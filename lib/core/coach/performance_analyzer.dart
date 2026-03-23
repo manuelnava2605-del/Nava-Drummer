@@ -3,7 +3,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dart:math' as math;
 import '../../domain/entities/entities.dart';
-import '../global_timing_controller.dart';
 
 class HitData {
   final double  deltaMs;

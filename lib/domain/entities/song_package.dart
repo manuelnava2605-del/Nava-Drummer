@@ -62,15 +62,23 @@ extension StemTypeExt on StemType {
 /// final drumsPath   = audio.stemPath(StemType.drums);
 /// ```
 class AudioTrackSet {
-  /// Asset directory that contains all stems, e.g. 'assets/songs/aun_coda'
+  /// Asset or local filesystem directory containing all stems.
+  /// • Asset path:  'assets/songs/aun_coda'  (Flutter bundle)
+  /// • Local path:  '/data/.../song_cache/aun_coda'  (downloaded from Storage)
   final String packageDir;
 
   /// Map from StemType to filename within [packageDir].
   final Map<StemType, String> stems;
 
+  /// True when [packageDir] is a local filesystem path (downloaded from Storage).
+  /// False when it is a Flutter asset bundle path.
+  /// [BackingTrackService] uses this flag to choose setFilePath() vs setAsset().
+  final bool isLocal;
+
   const AudioTrackSet({
     required this.packageDir,
     required this.stems,
+    this.isLocal = false,
   });
 
   // ── Path access ─────────────────────────────────────────────────────────────
@@ -90,22 +98,12 @@ class AudioTrackSet {
 
   // ── Backing track logic ──────────────────────────────────────────────────────
 
-  /// The primary path for the "backing" track — what the user hears while
-  /// practicing drums (everything except the drum stem).
+  /// Returns the full-mix path (song.ogg) when available, or null.
   ///
-  /// Priority order:
-  ///   1. guitar.ogg  (most melodic, works well as solo backing)
-  ///   2. rhythm.ogg
-  ///   3. vocals.ogg
-  ///   4. song.ogg    (full pre-mix — includes drums, but usable as fallback)
-  ///   5. null        (no audio available)
-  String? get primaryBackingPath {
-    for (final type in [StemType.guitar, StemType.rhythm, StemType.vocals, StemType.song]) {
-      final p = stemPath(type);
-      if (p != null) return p;
-    }
-    return null;
-  }
+  /// A non-null value signals [BackingTrackService] to use single-player mode.
+  /// A null value signals multi-stem mode: [BackingTrackService] plays all
+  /// stems in [backingPaths] simultaneously for a complete backing mix.
+  String? get primaryBackingPath => stemPath(StemType.song);
 
   /// All non-drum stem paths (for mixed backing when multi-track playback
   /// is supported in the future).

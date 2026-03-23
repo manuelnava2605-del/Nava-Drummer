@@ -216,12 +216,19 @@ class SongModel {
   final String artist;
   final String difficulty;
   final String genre;
-  final int bpm;
-  final int durationSeconds;
+  final int    bpm;
+  final int    durationSeconds;
   final String midiStoragePath;
-  final bool isPremium;
-  final int xpReward;
-  final int requiredLevel;
+  /// Firebase Storage folder path for the full song package.
+  /// e.g. "songs/Coda - Aún"
+  /// When non-empty, the song is a downloadable package (song.ini + notes.mid + OGG stems).
+  final String storageFolderPath;
+  final bool   isPremium;
+  final int    xpReward;
+  final int    requiredLevel;
+  final String? techniqueTag;
+  final String? description;
+  final int     order;
 
   const SongModel({
     required this.id,
@@ -232,38 +239,110 @@ class SongModel {
     required this.bpm,
     required this.durationSeconds,
     required this.midiStoragePath,
+    required this.storageFolderPath,
     required this.isPremium,
     required this.xpReward,
     required this.requiredLevel,
+    this.techniqueTag,
+    this.description,
+    this.order = 0,
   });
 
   factory SongModel.fromDoc(DocumentSnapshot doc) {
     final d = doc.data() as Map<String, dynamic>;
     return SongModel(
-      id:               doc.id,
-      title:            d['title']            as String,
-      artist:           d['artist']           as String? ?? 'NavaDrummer',
-      difficulty:       d['difficulty']        as String? ?? 'beginner',
-      genre:            d['genre']             as String? ?? 'rock',
-      bpm:              d['bpm']               as int? ?? 100,
-      durationSeconds:  d['durationSeconds']   as int? ?? 60,
-      midiStoragePath:  d['midiStoragePath']   as String? ?? '',
-      isPremium:        d['isPremium']          as bool? ?? false,
-      xpReward:         d['xpReward']           as int? ?? 100,
-      requiredLevel:    d['requiredLevel']      as int? ?? 1,
+      id:                 doc.id,
+      title:              d['title']              as String? ?? doc.id,
+      artist:             d['artist']             as String? ?? 'NavaDrummer',
+      difficulty:         d['difficulty']          as String? ?? 'beginner',
+      genre:              d['genre']               as String? ?? 'rock',
+      bpm:                (d['bpm']               as num?)?.toInt() ?? 100,
+      durationSeconds:    (d['durationSeconds']   as num?)?.toInt() ?? 60,
+      midiStoragePath:    d['midiStoragePath']     as String? ?? '',
+      storageFolderPath:  _normalizeStoragePath(d['storageFolderPath'] as String? ?? ''),
+      isPremium:          d['isPremium']            as bool? ?? false,
+      xpReward:           (d['xpReward']           as num?)?.toInt() ?? 100,
+      requiredLevel:      (d['requiredLevel']      as num?)?.toInt() ?? 1,
+      techniqueTag:       d['techniqueTag']         as String?,
+      description:        d['description']          as String?,
+      order:              (d['order']              as num?)?.toInt() ?? 0,
     );
   }
 
   Map<String, dynamic> toMap() => {
-    'title':           title,
-    'artist':          artist,
-    'difficulty':      difficulty,
-    'genre':           genre,
-    'bpm':             bpm,
-    'durationSeconds': durationSeconds,
-    'midiStoragePath': midiStoragePath,
-    'isPremium':       isPremium,
-    'xpReward':        xpReward,
-    'requiredLevel':   requiredLevel,
+    'title':             title,
+    'artist':            artist,
+    'difficulty':        difficulty,
+    'genre':             genre,
+    'bpm':               bpm,
+    'durationSeconds':   durationSeconds,
+    'midiStoragePath':   midiStoragePath,
+    'storageFolderPath': storageFolderPath,
+    'isPremium':         isPremium,
+    'xpReward':          xpReward,
+    'requiredLevel':     requiredLevel,
+    'techniqueTag':      techniqueTag,
+    'description':       description,
+    'order':             order,
   };
+
+  /// Convert to domain [Song] entity.
+  /// [localCachePath] — if the song is already downloaded, pass the local
+  /// filesystem path so [SongPackageLoader] can load it without re-downloading.
+  Song toDomain({String? localCachePath}) {
+    final effectivePath = localCachePath ??
+        (storageFolderPath.isNotEmpty ? storageFolderPath : null);
+    return Song(
+      id:             id,
+      title:          title,
+      artist:         artist,
+      difficulty:     _parseDifficulty(difficulty),
+      genre:          _parseGenre(genre),
+      bpm:            bpm,
+      duration:       Duration(seconds: durationSeconds),
+      packageAssetDir: effectivePath,
+      midiAssetPath:  '',
+      isUnlocked:     !isPremium,
+      xpReward:       xpReward,
+      techniqueTag:   techniqueTag,
+      description:    description,
+    );
+  }
+
+  static Difficulty _parseDifficulty(String raw) {
+    switch (raw.toLowerCase()) {
+      case 'beginner':     return Difficulty.beginner;
+      case 'intermediate': return Difficulty.intermediate;
+      case 'advanced':     return Difficulty.advanced;
+      case 'expert':       return Difficulty.expert;
+      default:             return Difficulty.intermediate;
+    }
+  }
+
+  /// Normalizes the Firebase Storage folder path so the first segment
+  /// always starts with an uppercase letter.
+  /// "songs/Coda - Aún" → "Songs/Coda - Aún"
+  /// "Songs/Moenia - No Dices Más" → unchanged
+  static String _normalizeStoragePath(String raw) {
+    if (raw.isEmpty) return raw;
+    final slash = raw.indexOf('/');
+    if (slash <= 0) return raw;
+    final folder = raw.substring(0, slash);
+    final rest   = raw.substring(slash);            // includes the leading /
+    final normalized = folder[0].toUpperCase() + folder.substring(1);
+    return normalized + rest;
+  }
+
+  static Genre _parseGenre(String raw) {
+    switch (raw.toLowerCase()) {
+      case 'rock':      return Genre.rock;
+      case 'pop':       return Genre.pop;
+      case 'metal':     return Genre.metal;
+      case 'jazz':      return Genre.jazz;
+      case 'funk':      return Genre.funk;
+      case 'latin':     return Genre.latin;
+      case 'cristiana': return Genre.cristiana;
+      default:          return Genre.rock;
+    }
+  }
 }

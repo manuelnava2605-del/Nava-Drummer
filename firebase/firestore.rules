@@ -1,48 +1,65 @@
 // NavaDrummer — Firestore Security Rules
 // Deploy: firebase deploy --only firestore:rules
+//
+// Collections:
+//   users/{userId}                        — profile (displayName, email, photoUrl)
+//   progress/{userId}                     — XP, level, streak, best scores
+//   sessions/{sessionId}                  — one document per completed session
+//   analytics/{userId}/sessions/{id}      — per-note analytics (written by app)
+//   analytics/{userId}/daily/{dayKey}     — daily accuracy aggregates
+//   songs/{songId}                        — public song catalog (admin writes only)
+//   leaderboard/{songId}/scores/{userId}  — per-song top scores
 
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Helper Functions ────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
-    function isAuthenticated() {
+    function isAuth() {
       return request.auth != null;
     }
 
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isAuth() && request.auth.uid == userId;
     }
 
+    // Progress doc must have the 4 mandatory numeric fields.
+    // Uses request.resource.data (final merged state) so safe with merge:true.
     function isValidProgress() {
       let p = request.resource.data;
-      return p.totalXp      is int  && p.totalXp      >= 0
-          && p.level         is int  && p.level         >= 1
-          && p.currentStreak is int  && p.currentStreak >= 0
-          && p.maxStreak     is int  && p.maxStreak     >= 0;
+      return p.keys().hasAll(['totalXp', 'level', 'currentStreak', 'maxStreak'])
+          && p.totalXp      is int && p.totalXp      >= 0
+          && p.level        is int && p.level        >= 1
+          && p.currentStreak is int && p.currentStreak >= 0
+          && p.maxStreak    is int && p.maxStreak    >= 0;
     }
 
+    // Session must have the core fields with sane types.
+    // accuracyPercent uses 'number' (covers both int 0 and float).
     function isValidSession() {
       let s = request.resource.data;
-      return s.userId          is string
-          && s.songId           is string
-          && s.totalScore       is int    && s.totalScore       >= 0
-          && s.accuracyPercent  is float  && s.accuracyPercent  >= 0
-                                          && s.accuracyPercent  <= 100
-          && s.letterGrade      in ['S','A','B','C','D'];
+      return s.keys().hasAll(['userId','songId','totalScore','accuracyPercent','letterGrade'])
+          && s.userId         is string
+          && s.songId         is string
+          && s.totalScore     is int    && s.totalScore >= 0
+          && s.accuracyPercent is number && s.accuracyPercent >= 0
+                                        && s.accuracyPercent <= 100
+          && s.letterGrade    in ['S','A','B','C','D'];
     }
 
-    // ── users/{userId} ──────────────────────────────────────────────────────
+    // ── users/{userId} ───────────────────────────────────────────────────────
+    // Only the user can read/write their own profile.
     match /users/{userId} {
       allow read:   if isOwner(userId);
       allow create: if isOwner(userId);
       allow update: if isOwner(userId);
-      allow delete: if false; // no deletion
+      allow delete: if false;
     }
 
-    // ── progress/{userId} ───────────────────────────────────────────────────
+    // ── progress/{userId} ────────────────────────────────────────────────────
+    // Full validation on create; merge-safe update (keys().hasAll checks final state).
     match /progress/{userId} {
       allow read:   if isOwner(userId);
       allow create: if isOwner(userId) && isValidProgress();
@@ -50,33 +67,53 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── sessions/{sessionId} ────────────────────────────────────────────────
+    // ── sessions/{sessionId} ─────────────────────────────────────────────────
+    // User can read/create their own sessions. No edits to historical records.
     match /sessions/{sessionId} {
-      // Read own sessions
-      allow read:   if isAuthenticated()
-                    && resource.data.userId == request.auth.uid;
-
-      // Create — user can only write their own session
-      allow create: if isAuthenticated()
+      allow read:   if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isAuth()
                     && request.resource.data.userId == request.auth.uid
                     && isValidSession();
-
-      // No updates / deletes on historical sessions
       allow update: if false;
       allow delete: if false;
     }
 
-    // ── songs/{songId} ──────────────────────────────────────────────────────
-    // Songs are public (read) but only admins can write (handled via Admin SDK)
-    match /songs/{songId} {
-      allow read:   if true;
-      allow write:  if false;
+    // ── analytics/{userId} ───────────────────────────────────────────────────
+    // Fine-grained analytics written by the app after each session.
+    // Sub-collections: sessions/{sessionId} and daily/{dayKey}
+    match /analytics/{userId} {
+      allow read, write: if false; // root doc never used
+
+      // Per-session note analytics
+      match /sessions/{sessionId} {
+        allow read:   if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if false; // immutable once written
+        allow delete: if false;
+      }
+
+      // Daily rolling aggregates (updated via transactions)
+      match /daily/{dayKey} {
+        allow read:   if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId);
+        allow delete: if false;
+      }
     }
 
-    // ── leaderboard/{songId}/scores/{userId} ────────────────────────────────
+    // ── songs/{songId} ───────────────────────────────────────────────────────
+    // Public catalog: anyone authenticated can read.
+    // Writes go through Admin SDK / Firebase Console only.
+    match /songs/{songId} {
+      allow read:  if isAuth();
+      allow write: if false;
+    }
+
+    // ── leaderboard/{songId}/scores/{userId} ─────────────────────────────────
+    // Any authenticated user can read scores; can only write their own entry.
     match /leaderboard/{songId}/scores/{userId} {
-      allow read:   if isAuthenticated();
-      allow write:  if isOwner(userId);
+      allow read:  if isAuth();
+      allow write: if isOwner(userId);
     }
   }
 }

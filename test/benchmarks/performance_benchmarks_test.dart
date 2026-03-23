@@ -218,11 +218,11 @@ void main() {
 class _InlineTimingCoach {
   List<_Suggestion> call(PerformanceSession session) {
     final scored = session.hitResults
-        .where((r) => r.grade != HitGrade.miss && r.timingDeltaMs != null)
+        .where((r) => r.grade != HitGrade.miss)
         .toList();
 
     if (scored.isEmpty) return [];
-    final avg = scored.map((r) => r.timingDeltaMs!).reduce((a, b) => a + b)
+    final avg = scored.map((r) => r.timingDeltaMs).reduce((a, b) => a + b)
         / scored.length;
 
     return [_Suggestion(avg < 0 ? 'Playing early' : 'Playing late')];

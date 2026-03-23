@@ -146,7 +146,6 @@ class CoachEngine {
   // ── Convert domain HitResult → HitData ────────────────────────────────────
   List<HitData> _toHitData(PerformanceSession session) {
     final hits = <HitData>[];
-    final totalNotes = session.hitResults.length;
 
     for (int i = 0; i < session.hitResults.length; i++) {
       final r = session.hitResults[i];

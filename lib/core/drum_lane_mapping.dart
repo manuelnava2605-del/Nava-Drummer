@@ -1,31 +1,37 @@
 import '../domain/entities/entities.dart';
 
+// ── Lane order (left → right on screen) ───────────────────────────────────────
+// Standard 5-piece kit with cymbals:
+//   HH | CRASH | SNARE | KICK | TOM1 | TOM2 | FLOOR | RIDE
 const List<DrumPad> kDrumLanes = [
-  DrumPad.hihatClosed,
-  DrumPad.crash1,
-  DrumPad.snare,
-  DrumPad.kick,
-  DrumPad.tom1,
-  DrumPad.floorTom,
-  DrumPad.ride,
+  DrumPad.hihatClosed, // 0 — HH
+  DrumPad.crash1,      // 1 — CRASH
+  DrumPad.snare,       // 2 — SNARE
+  DrumPad.kick,        // 3 — KICK
+  DrumPad.tom1,        // 4 — TOM1
+  DrumPad.tom2,        // 5 — TOM2
+  DrumPad.floorTom,    // 6 — FLOOR
+  DrumPad.ride,        // 7 — RIDE
 ];
 
 const List<String> kDrumLaneNames = [
-  'HH', 'CRASH', 'SNARE', 'KICK', 'TOM', 'FLOOR', 'RIDE',
+  'HH', 'CRASH', 'SNARE', 'KICK', 'T1', 'T2', 'FLOOR', 'RIDE',
 ];
 
+/// Returns the visual lane index for [pad].
+/// Pads that share a column (e.g. hihatOpen → HH, crash2 → CRASH) are
+/// mapped via the fallback switch below.
 int drumLaneIndex(DrumPad pad) {
   final idx = kDrumLanes.indexOf(pad);
   if (idx != -1) return idx;
   switch (pad) {
-    case DrumPad.hihatOpen:   return 0;
-    case DrumPad.hihatPedal:  return 0;
-    case DrumPad.crash2:      return 1;
-    case DrumPad.rimshot:     return 2;
-    case DrumPad.crossstick:  return 2;
-    case DrumPad.tom2:        return 5;
-    case DrumPad.tom3:        return 5;
-    case DrumPad.rideBell:    return 6;
+    case DrumPad.hihatOpen:   return 0; // HH
+    case DrumPad.hihatPedal:  return 0; // HH
+    case DrumPad.crash2:      return 1; // CRASH
+    case DrumPad.rimshot:     return 2; // SNARE
+    case DrumPad.crossstick:  return 2; // SNARE
+    case DrumPad.tom3:        return 6; // FLOOR (no dedicated T3 lane)
+    case DrumPad.rideBell:    return 7; // RIDE
     default:                  return -1;
   }
 }

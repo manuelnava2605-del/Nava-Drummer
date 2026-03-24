@@ -21,15 +21,18 @@ class MidiFileParser {
     // Build tempo map from all tracks
     final tempoMap = _buildTempoMap(tracks);
 
-    // Find drum track (channel 10 / 0-indexed 9, or track with most note 36-81)
-    final drumTrack = _findDrumTrack(tracks) ?? tracks.first;
+    // Find drum track (channel 10 / 0-indexed 9, or track with most note 36-81).
+    // Also returns the drum channel so _convertToNoteEvents can filter out
+    // non-drum instruments in Format-0 / multi-instrument MIDIs.
+    final (:track, :drumChannel) = _findDrumTrackWithChannel(tracks);
 
     // Convert raw events → NoteEvents with real timestamps
     final noteEvents = _convertToNoteEvents(
-      drumTrack.events,
+      track.events,
       header.ppq,
       tempoMap,
       mapping,
+      drumChannel: drumChannel,
     );
 
     return MidiParseResult(
@@ -196,25 +199,33 @@ class MidiFileParser {
   }
 
   // ── Find Drum Track ─────────────────────────────────────────────────────────
-  _Track? _findDrumTrack(List<_Track> tracks) {
+  //
+  // Returns the drum track AND the identified drum channel (-1 = all channels).
+  // The drum channel is used by _convertToNoteEvents to filter out non-drum
+  // instruments that happen to share the same track in Format-0 MIDIs.
+  ({_Track track, int drumChannel}) _findDrumTrackWithChannel(List<_Track> tracks) {
     // 1. Clone Hero / RBN format: track named "PART DRUMS" or similar.
     //    These tracks use MIDI channel 0 (not 9) and note range 95–100.
+    //    All channels are valid — return drumChannel = -1 (no filter).
     for (final track in tracks) {
       final n = track.name.toUpperCase();
       if (n == 'PART DRUMS' || n == 'PART DRUMS REAL' || n == 'DRUMS') {
-        return track;
+        return (track: track, drumChannel: -1);
       }
     }
-    // 2. Standard GM: MIDI channel 10 (0-indexed: 9)
+    // 2. Standard GM: MIDI channel 10 (0-indexed: 9).
+    //    Return drumChannel = 9 so that non-drum notes on other channels
+    //    (piano, bass, guitar) are ignored in multi-instrument MIDIs.
     for (final track in tracks) {
       final drumNotes = track.events
           .whereType<_NoteRaw>()
           .where((e) => e.channel == 9)
           .length;
-      if (drumNotes > 0) return track;
+      if (drumNotes > 0) return (track: track, drumChannel: 9);
     }
     // 3. Fallback: track with most notes in extended drum range (35–116).
     //    Upper bound 116 covers Clone Hero star-power and RBN expert notes.
+    //    No channel filter since we don't know which channel carries drums.
     _Track? best;
     int bestCount = 0;
     for (final track in tracks) {
@@ -224,7 +235,8 @@ class MidiFileParser {
           .length;
       if (count > bestCount) { bestCount = count; best = track; }
     }
-    return best;
+    final fallback = best ?? tracks.first;
+    return (track: fallback, drumChannel: -1);
   }
 
   // ── Tick → Seconds Conversion ───────────────────────────────────────────────
@@ -261,16 +273,21 @@ class MidiFileParser {
     List<_RawEvent> rawEvents,
     int ppq,
     List<_TempoChange> tempoMap,
-    DrumMapping mapping,
-  ) {
+    DrumMapping mapping, {
+    int drumChannel = -1,   // -1 = accept all channels
+  }) {
     // Detect Clone Hero Expert mode: mapping covers note 95 or 99 (CH-specific).
     final isChExpert = mapping.noteMap.containsKey(95) ||
                        mapping.noteMap.containsKey(99);
 
-    // Group all note-on events by tick for marker-context resolution.
+    // Group note-on events by tick.
+    // For GM (non-CH-Expert) with a known drum channel (identified via ch 9),
+    // skip notes from other channels — this prevents piano/bass/guitar notes
+    // in range 35–81 from being misidentified as drum hits in Format-0 MIDIs.
     final byTick = <int, List<_NoteRaw>>{};
     for (final raw in rawEvents) {
       if (raw is! _NoteRaw || !raw.isOn) continue;
+      if (!isChExpert && drumChannel >= 0 && raw.channel != drumChannel) continue;
       (byTick[raw.tick] ??= []).add(raw);
     }
 
@@ -457,4 +474,179 @@ class MidiParseException implements Exception {
   final String message;
   const MidiParseException(this.message);
   @override String toString() => 'MidiParseException: $message';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ChartFileParser  —  Clone Hero / Moonscraper  .chart  format
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Parses a Clone Hero .chart text file and returns a [MidiParseResult]
+/// fully compatible with the rest of the NavaDrummer pipeline.
+///
+/// Only [ExpertDrums] is read for notes.  BPM / time-sig come from [SyncTrack].
+///
+/// Drum note → [DrumPad] mapping:
+///   0 / 5 → kick          (bass pedal 1 / 2)
+///   1     → snare         (red)
+///   2     → hihatClosed   (yellow — resolved later via pro-marker logic)
+///   3     → tom2          (blue   — resolved later via pro-marker logic)
+///   4     → crash1        (green  — resolved later via pro-marker logic)
+///   32    → rimshot       (sentinel: yellow cymbal marker)
+///   33    → rideBell      (sentinel: blue   cymbal marker)
+///   34    → crash2        (sentinel: green  cymbal marker)
+class ChartFileParser {
+  MidiParseResult parse(String text) {
+    final resolution = _parseResolution(text);
+    final tempoMap   = _parseTempoMap(text);
+    final timeSig    = _parseTimeSig(text);
+    final notes      = _parseDrumSection(text, resolution, tempoMap);
+
+    return MidiParseResult(
+      noteEvents:    notes,
+      tempoMap:      tempoMap,
+      timeSignature: timeSig,
+      totalDuration: _calcDuration(notes),
+      ppq:           resolution,
+    );
+  }
+
+  // ── [Song] ──────────────────────────────────────────────────────────────
+
+  int _parseResolution(String text) {
+    final m = RegExp(
+      r'^\s*Resolution\s*=\s*(\d+)',
+      multiLine: true,
+    ).firstMatch(text);
+    return int.tryParse(m?.group(1) ?? '') ?? 192;
+  }
+
+  // ── [SyncTrack] ─────────────────────────────────────────────────────────
+
+  List<_TempoChange> _parseTempoMap(String text) {
+    final section = _section(text, 'SyncTrack');
+    final changes = <_TempoChange>[];
+
+    for (final line in section.split('\n')) {
+      // "tick = BPM value"  — value = actualBPM × 1000
+      final m = RegExp(r'^\s*(\d+)\s*=\s*BPM\s+(\d+)').firstMatch(line);
+      if (m == null) continue;
+      final tick  = int.parse(m.group(1)!);
+      final value = int.parse(m.group(2)!);         // BPM × 1000
+      // μs/beat = 60 000 000 / bpm = 60 000 000 000 / value
+      final uspb  = (60000000000.0 / value).round();
+      changes.add(_TempoChange(tick: tick, microsecondsPerBeat: uspb));
+    }
+
+    changes.sort((a, b) => a.tick.compareTo(b.tick));
+    if (changes.isEmpty) {
+      changes.add(_TempoChange(tick: 0, microsecondsPerBeat: 500000)); // 120 BPM
+    }
+    return changes;
+  }
+
+  _TimeSignature _parseTimeSig(String text) {
+    final section = _section(text, 'SyncTrack');
+    for (final line in section.split('\n')) {
+      // "tick = TS numerator [denomExponent]"  — denominator = 2^denExp (default 2)
+      final m = RegExp(
+        r'^\s*\d+\s*=\s*TS\s+(\d+)(?:\s+(\d+))?',
+      ).firstMatch(line);
+      if (m == null) continue;
+      final num    = int.parse(m.group(1)!);
+      final denExp = int.tryParse(m.group(2) ?? '') ?? 2;
+      return _TimeSignature(numerator: num, denominator: 1 << denExp);
+    }
+    return const _TimeSignature(numerator: 4, denominator: 4);
+  }
+
+  // ── [ExpertDrums] ───────────────────────────────────────────────────────
+
+  List<NoteEvent> _parseDrumSection(
+    String text,
+    int    resolution,
+    List<_TempoChange> tempoMap,
+  ) {
+    final section = _section(text, 'ExpertDrums');
+    if (section.isEmpty) return const [];
+
+    // Group chart note numbers by tick.
+    final byTick = <int, List<int>>{};
+    for (final line in section.split('\n')) {
+      // "tick = N noteNum length"
+      final m = RegExp(r'^\s*(\d+)\s*=\s*N\s+(\d+)').firstMatch(line);
+      if (m == null) continue;
+      final tick = int.parse(m.group(1)!);
+      final note = int.parse(m.group(2)!);
+      (byTick[tick] ??= []).add(note);
+    }
+
+    final result = <NoteEvent>[];
+    for (final entry in byTick.entries) {
+      final tick    = entry.key;
+      final timeSec = _tickToSec(tick, resolution, tempoMap);
+
+      for (final note in entry.value.toSet()) {
+        final pad = _noteToPad(note);
+        if (pad == null) continue;
+        result.add(NoteEvent(
+          pad:          pad,
+          midiNote:     note,
+          beatPosition: tick / resolution.toDouble(),
+          timeSeconds:  timeSec,
+          velocity:     100,
+        ));
+      }
+    }
+
+    result.sort((a, b) => a.timeSeconds.compareTo(b.timeSeconds));
+    return result;
+  }
+
+  // ── Note mapping ────────────────────────────────────────────────────────
+
+  DrumPad? _noteToPad(int note) {
+    switch (note) {
+      case 0:
+      case 5:  return DrumPad.kick;
+      case 1:  return DrumPad.snare;
+      case 2:  return DrumPad.hihatClosed; // yellow (HH or T1 — resolved later)
+      case 3:  return DrumPad.tom2;        // blue   (T2 or Ride — resolved later)
+      case 4:  return DrumPad.crash1;      // green  (Crash or Floor — resolved later)
+      case 32: return DrumPad.rimshot;     // sentinel: yellow cymbal marker
+      case 33: return DrumPad.rideBell;    // sentinel: blue   cymbal marker
+      case 34: return DrumPad.crash2;      // sentinel: green  cymbal marker
+      default: return null;                // star power, open notes, etc.
+    }
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  /// Extracts the content between `[SectionName] {` and the closing `}`.
+  String _section(String text, String name) {
+    final m = RegExp(
+      r'\[' + name + r'\]\s*\{([^}]*)\}',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(text);
+    return m?.group(1) ?? '';
+  }
+
+  double _tickToSec(int tick, int ppq, List<_TempoChange> tempoMap) {
+    double sec      = 0;
+    int    lastTick = 0;
+    double uspb     = 500000; // default 120 BPM
+    for (final change in tempoMap) {
+      if (change.tick >= tick) break;
+      sec     += (change.tick - lastTick) * uspb / (ppq * 1000000.0);
+      lastTick = change.tick;
+      uspb     = change.microsecondsPerBeat.toDouble();
+    }
+    sec += (tick - lastTick) * uspb / (ppq * 1000000.0);
+    return sec;
+  }
+
+  Duration _calcDuration(List<NoteEvent> events) {
+    if (events.isEmpty) return Duration.zero;
+    return Duration(milliseconds: (events.last.timeSeconds * 1000).round() + 2000);
+  }
 }

@@ -1,18 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // NavaDrummer — Song Package Domain Models
 //
-// A SongPackage is the internal representation of a Clone Hero / RBN song
-// bundle after it has been fully loaded by SongPackageLoader.
+// A SongPackage is the internal representation of a MIDI song bundle after it
+// has been fully loaded by SongPackageLoader.
 //
-// Pipeline:
-//   assets/songs/<id>/         ← Clone Hero bundle on disk
-//     song.ini                 → SongPackage.meta (name, artist, genre…)
-//     notes.mid                → SongPackage.chart (List<NoteEvent>)
-//     *.ogg stems              → SongPackage.audio (AudioTrackSet)
-//   + derived from MIDI        → SongPackage.syncProfile (BPM, offsets…)
+// Bundle layout:
+//   <packageDir>/
+//     notes.mid      → SongPackage.chart (List<NoteEvent>, GM mapping)
+//     song.ini       → optional metadata (title, artist, delay…)
+//     *.ogg stems    → SongPackage.audio (AudioTrackSet, for future vocals)
+//   + derived from MIDI → SongPackage.syncProfile (BPM, offsets…)
 //
-// The SongPackage is the NEW single source of truth for a song.
-// No other place may hardcode BPM, chart offsets, stem paths, or note data.
+// The SongPackage is the single source of truth for a song.
 // ─────────────────────────────────────────────────────────────────────────────
 import 'entities.dart';
 import '../../core/song_sync_profile.dart';
@@ -147,18 +146,14 @@ class SongPackage {
   /// Single source of truth for timing: BPM, offsets, sections, beat grid.
   final SongSyncProfile syncProfile;
 
-  /// Audio stems available for this package.
+  /// Audio stems available for this package (OGG files — vocals / backing).
   final AudioTrackSet audio;
-
-  /// True when the chart used the Clone Hero / RBN Expert note range (95–100).
-  final bool isCloneHeroFormat;
 
   const SongPackage({
     required this.song,
     required this.chart,
     required this.syncProfile,
     required this.audio,
-    this.isCloneHeroFormat = false,
   });
 
   // ── Convenience pass-throughs ─────────────────────────────────────────────

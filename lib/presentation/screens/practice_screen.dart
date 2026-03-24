@@ -2,12 +2,16 @@
 // NavaDrummer — Practice Screen (FIXED PRO VERSION)
 // ─────────────────────────────────────────────────────────────────────────────
 import 'dart:async';
+import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../domain/entities/entities.dart';
 import '../bloc/blocs.dart';
@@ -24,6 +28,7 @@ import '../../core/coach/coach.dart';
 import '../../core/sync_diagnostics.dart';
 import '../../data/datasources/local/midi_file_parser.dart';
 import '../../data/datasources/local/song_package_loader.dart';
+import '../../core/midi_synth_service.dart';
 
 class PracticeScreen extends StatefulWidget {
   final Song song;
@@ -51,6 +56,9 @@ class _PracticeScreenState extends State<PracticeScreen>
 
   final List<StreamSubscription> _subs = [];
   bool _showingResults = false;
+  int  _lastComboTier = 0;
+  bool _showComboMilestone = false;
+  int  _comboMilestoneMultiplier = 2;
 
   List<NoteEvent> _noteEvents = [];
   bool _isLoading = true;
@@ -80,6 +88,9 @@ class _PracticeScreenState extends State<PracticeScreen>
     super.initState();
 
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // Keep screen on while practising — the main() call can be lost if the
+    // app was backgrounded/foregrounded between launch and reaching this screen.
+    WakelockPlus.enable();
 
     _countInCtrl = AnimationController(vsync: this, duration: 600.ms);
     _perfectBurstCtrl = AnimationController(vsync: this, duration: 300.ms);
@@ -96,9 +107,27 @@ class _PracticeScreenState extends State<PracticeScreen>
     });
 
     try {
+      // Kick off soundfont init in parallel with song loading.
+      final synthInitFuture = MidiSynthService.instance.init();
+
       if (widget.song.isPackageBased) {
-        final package = await SongPackageLoader.load(widget.song.packageAssetDir!);
+        // Resolve local path — download from Firebase Storage if needed.
+        String packageDir = widget.song.packageAssetDir!;
+        if (!packageDir.startsWith('/') && !packageDir.startsWith('assets/')) {
+          packageDir = await _fetchSongPackage(widget.song.id, packageDir);
+        }
+
+        final package = await SongPackageLoader.load(packageDir);
         await widget.engine.loadSongPackage(package);
+
+        // For MIDI-only packages (no OGG stems), feed the raw MIDI to the synth.
+        if (!widget.engine.hasBackingTrack) {
+          await synthInitFuture;
+          final midFile = File('$packageDir/notes.mid');
+          if (midFile.existsSync()) {
+            await MidiSynthService.instance.load(await midFile.readAsBytes());
+          }
+        }
 
         if (mounted) {
           setState(() {
@@ -118,6 +147,10 @@ class _PracticeScreenState extends State<PracticeScreen>
         final result = parser.parse(bytes.buffer.asUint8List(), mapping);
 
         await widget.engine.loadSong(widget.song, result.noteEvents, mapping);
+
+        // Always feed MIDI-only songs to the synth.
+        await synthInitFuture;
+        await MidiSynthService.instance.load(bytes.buffer.asUint8List());
 
         if (mounted) {
           setState(() => _noteEvents = result.noteEvents);
@@ -149,6 +182,48 @@ class _PracticeScreenState extends State<PracticeScreen>
     }
   }
 
+  // ── Firebase Storage package download ─────────────────────────────────────
+
+  /// Downloads [notes.mid] and [song.ini] from Firebase Storage to the local
+  /// app cache directory so [SongPackageLoader] can read them from disk.
+  ///
+  /// [storageFolderPath] is the Storage folder (e.g. "Songs/Marcos Witt - Tu Fidelidad").
+  /// Returns the local filesystem path to the cached package directory.
+  ///
+  /// On subsequent calls the cached version is returned immediately unless the
+  /// files are missing (e.g. first install or cache cleared).
+  Future<String> _fetchSongPackage(
+    String songId,
+    String storageFolderPath,
+  ) async {
+    final base    = await getApplicationDocumentsDirectory();
+    final local   = '${base.path}/song_cache/$songId';
+    final midFile = File('$local/notes.mid');
+
+    if (midFile.existsSync()) return local; // already cached
+
+    debugPrint('[PracticeScreen] Downloading package: $storageFolderPath → $local');
+    await Directory(local).create(recursive: true);
+
+    // Ensure an auth token exists before accessing Firebase Storage.
+    if (FirebaseAuth.instance.currentUser == null) {
+      await FirebaseAuth.instance.signInAnonymously();
+    }
+
+    final storage = FirebaseStorage.instance;
+    // Only download notes.mid — song.ini (Clone Hero metadata) is no longer used.
+    for (final file in ['notes.mid']) {
+      try {
+        final data = await storage.ref('$storageFolderPath/$file').getData();
+        if (data != null) await File('$local/$file').writeAsBytes(data);
+      } catch (e) {
+        debugPrint('[PracticeScreen] Warning: could not download $file — $e');
+      }
+    }
+
+    return local;
+  }
+
   void _listenToEngine() {
 
     _subs.add(widget.engine.stateChanges.listen((s) {
@@ -156,6 +231,17 @@ class _PracticeScreenState extends State<PracticeScreen>
 
       if (_engineState != s) {
         setState(() => _engineState = s);
+      }
+
+      // Keep MIDI synth in lock-step with the engine.
+      if (!widget.engine.hasBackingTrack) {
+        if (s == EngineState.playing) {
+          MidiSynthService.instance.play();
+        } else if (s == EngineState.paused) {
+          MidiSynthService.instance.pause();
+        } else if (s == EngineState.idle || s == EngineState.finished) {
+          MidiSynthService.instance.stop();
+        }
       }
 
       if (s == EngineState.finished && !_showingResults) {
@@ -169,6 +255,14 @@ class _PracticeScreenState extends State<PracticeScreen>
 
       if (s.perfectCount > _scoreState.perfectCount) {
         _triggerPerfectBurst();
+      }
+
+      // Combo milestone animation when tier increases (×2, ×4, ×8)
+      if (s.comboTier > _lastComboTier && s.comboTier > 0) {
+        _lastComboTier = s.comboTier;
+        _triggerComboMilestone(s.multiplier);
+      } else if (s.combo == 0) {
+        _lastComboTier = 0;
       }
 
       setState(() => _scoreState = s);
@@ -207,11 +301,33 @@ class _PracticeScreenState extends State<PracticeScreen>
     });
   }
 
+  void _triggerComboMilestone(int multiplier) {
+    setState(() {
+      _showComboMilestone = true;
+      _comboMilestoneMultiplier = multiplier;
+    });
+    Future.delayed(const Duration(milliseconds: 2200), () {
+      if (mounted) setState(() => _showComboMilestone = false);
+    });
+  }
+
   void _showResults() {
     final session = widget.engine.finish();
     if (!mounted) return;
 
     // ── Persist session & update Firestore progress ───────────────────────
+    // Ensure an auth session exists — sign in anonymously if the user somehow
+    // reached the practice screen without completing the auth flow.
+    _ensureAuthAndSaveSession(session);
+  }
+
+  Future<void> _ensureAuthAndSaveSession(PerformanceSession session) async {
+    try {
+      if (FirebaseAuth.instance.currentUser == null) {
+        await FirebaseAuth.instance.signInAnonymously();
+      }
+    } catch (_) {}
+    if (!mounted) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
       context.read<ProgressBloc>().add(ProgressSessionCompleted(session, uid));
@@ -302,6 +418,8 @@ class _PracticeScreenState extends State<PracticeScreen>
     _perfectBurstCtrl.dispose();
 
     widget.engine.stop();
+    MidiSynthService.instance.dispose(); // void — no await needed
+    WakelockPlus.disable(); // restore default screen-timeout when leaving practice
 
     super.dispose();
   }
@@ -343,7 +461,61 @@ class _PracticeScreenState extends State<PracticeScreen>
             animation: _perfectBurstCtrl,
             builder: (_, __) => Container(
               color: _burstColor!
-                  .withOpacity((1 - _perfectBurstCtrl.value) * 0.10),
+                  .withValues(alpha: (1 - _perfectBurstCtrl.value) * 0.10),
+            ),
+          ),
+
+        // ── Combo milestone banner ─────────────────────────────────────
+        if (_showComboMilestone)
+          Positioned(
+            top: 80,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0.0, end: 1.0),
+                duration: const Duration(milliseconds: 400),
+                curve: Curves.elasticOut,
+                builder: (_, v, child) => Transform.scale(
+                  scale: v,
+                  child: child,
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: _comboMilestoneMultiplier >= 8
+                          ? [const Color(0xFFFF6D00), const Color(0xFFFF1744)]
+                          : _comboMilestoneMultiplier >= 4
+                              ? [const Color(0xFFAA00FF), const Color(0xFF6200EA)]
+                              : [const Color(0xFF00E5FF), const Color(0xFF006064)],
+                    ),
+                    borderRadius: BorderRadius.circular(30),
+                    boxShadow: [
+                      BoxShadow(
+                        color: (_comboMilestoneMultiplier >= 8
+                                ? const Color(0xFFFF6D00)
+                                : _comboMilestoneMultiplier >= 4
+                                    ? const Color(0xFFAA00FF)
+                                    : const Color(0xFF00E5FF))
+                            .withValues(alpha: 0.7),
+                        blurRadius: 24,
+                        spreadRadius: 4,
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    '×$_comboMilestoneMultiplier COMBO!',
+                    style: const TextStyle(
+                      fontFamily: 'DrummerDisplay',
+                      fontSize: 26,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 3,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
 
@@ -391,7 +563,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   Widget _buildCountIn() => Container(
-        color: Colors.black.withOpacity(0.55),
+        color: Colors.black.withValues(alpha: 0.55),
         child: Center(
           child: Text('$_countInNumber',
               style: const TextStyle(fontSize: 120)),
@@ -513,6 +685,7 @@ class _PracticeScreenState extends State<PracticeScreen>
           onBackingVolumeChanged: (v) {
             setState(() => _backingVolume = v);
             BackingTrackService.instance.setVolume(v);
+            MidiSynthService.instance.setVolume(v);
           },
           onDrumVolumeChanged: (v) {
             setState(() => _drumVolume = v);
@@ -777,9 +950,9 @@ class _SliderRow extends StatelessWidget {
       SliderTheme(
         data: SliderThemeData(
           activeTrackColor:   color,
-          inactiveTrackColor: color.withOpacity(0.15),
+          inactiveTrackColor: color.withValues(alpha: 0.15),
           thumbColor:         color,
-          overlayColor:       color.withOpacity(0.1),
+          overlayColor:       color.withValues(alpha: 0.1),
           trackHeight:        3,
           thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
         ),
@@ -799,10 +972,10 @@ class _InfoChip extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
     decoration: BoxDecoration(
-      color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withOpacity(0.08),
+      color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withValues(alpha: 0.08),
       borderRadius: BorderRadius.circular(8),
       border: Border.all(
-          color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withOpacity(0.25)),
+          color: (active ? NavaTheme.neonCyan : NavaTheme.textMuted).withValues(alpha: 0.25)),
     ),
     child: Row(mainAxisSize: MainAxisSize.min, children: [
       Icon(icon,

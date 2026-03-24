@@ -72,19 +72,22 @@ class _FallingNotesViewState extends State<FallingNotesView>
   }
 
   void _onHit(HitResult r) {
-    final now   = DateTime.now();
-    final flash = _PadFlash(pad: r.expected.pad, grade: r.grade, createdAt: now);
+    // Use the pad the user actually hit for all visual feedback so that the
+    // correct column flashes — not the chart's expected pad.
+    final visualPad = r.hitPad ?? r.expected.pad;
+    final now       = DateTime.now();
+    final flash     = _PadFlash(pad: visualPad, grade: r.grade, createdAt: now);
     if (_padFlashes.length >= 14) _padFlashes.removeAt(0);
     _padFlashes.add(flash);
     Future.delayed(const Duration(milliseconds: 650), () {
       if (mounted) setState(() => _padFlashes.remove(flash));
     });
     if (r.grade == HitGrade.perfect || r.grade == HitGrade.good) {
-      _spawnSquares(r.expected.pad, now, r.grade);
+      _spawnSquares(visualPad, now, r.grade);
     }
     if (r.grade != HitGrade.miss &&
-        (r.expected.pad == DrumPad.kick || r.expected.pad == DrumPad.snare)) {
-      _triggerShake(r.expected.pad == DrumPad.kick ? 5.0 : 3.0);
+        (visualPad == DrumPad.kick || visualPad == DrumPad.snare)) {
+      _triggerShake(visualPad == DrumPad.kick ? 5.0 : 3.0);
     }
     if (mounted) setState(() {});
   }
@@ -146,13 +149,14 @@ class _FallingNotesViewState extends State<FallingNotesView>
   Widget build(BuildContext context) {
     return Transform.translate(
       offset: _shakeOffset,
-      child: GestureDetector(
+      // Listener instead of GestureDetector: bypasses the gesture arena so
+      // each finger fires independently — true multi-touch chord support.
+      child: Listener(
         behavior: HitTestBehavior.opaque,
-        onTapDown: widget.onPadTap == null ? null : (details) {
-          // Use a LayoutBuilder size approximation via RenderBox
-          final rb  = context.findRenderObject() as RenderBox?;
+        onPointerDown: widget.onPadTap == null ? null : (event) {
+          final rb = context.findRenderObject() as RenderBox?;
           if (rb == null) return;
-          final pad = _padForTap(details.localPosition, rb.size);
+          final pad = _padForTap(event.localPosition, rb.size);
           if (pad != null) widget.onPadTap!(pad);
         },
         child: AnimatedBuilder(
@@ -232,14 +236,14 @@ class _NotesPainter extends CustomPainter {
       canvas.drawRect(
         Rect.fromLTWH(i * laneW, 0, laneW, hitY),
         Paint()..shader = LinearGradient(
-          colors: [color.withOpacity(0.02), color.withOpacity(0.12)],
+          colors: [color.withValues(alpha: 0.02), color.withValues(alpha: 0.12)],
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
         ).createShader(Rect.fromLTWH(i * laneW, 0, laneW, hitY)),
       );
       canvas.drawRect(
         Rect.fromLTWH(i * laneW, hitY, laneW, size.height - hitY),
-        Paint()..color = color.withOpacity(0.08),
+        Paint()..color = color.withValues(alpha: 0.08),
       );
     }
   }
@@ -274,12 +278,13 @@ class _NotesPainter extends CustomPainter {
 
   void _drawRectNote(Canvas canvas, double cx, double y,
       double laneW, NoteEvent note) {
-    final color  = NavaTheme.padColor(note.pad);
-    final w      = laneW * _noteW;
-    const h      = _noteH;
-    const radius = Radius.circular(5);
-    final rect   = Rect.fromCenter(center: Offset(cx, y), width: w, height: h);
-    final rr     = RRect.fromRectAndRadius(rect, radius);
+    final color   = NavaTheme.padColor(note.pad);
+    final w       = laneW * _noteW;
+    const h       = _noteH;
+    const radius  = Radius.circular(5);
+    final isOpen  = note.pad == DrumPad.hihatOpen; // hollow style for open HH
+    final rect    = Rect.fromCenter(center: Offset(cx, y), width: w, height: h);
+    final rr      = RRect.fromRectAndRadius(rect, radius);
 
     // Glow
     canvas.drawRRect(
@@ -287,23 +292,44 @@ class _NotesPainter extends CustomPainter {
           Rect.fromCenter(center: Offset(cx, y), width: w + 10, height: h + 8),
           const Radius.circular(8)),
       Paint()
-        ..color      = color.withOpacity(0.30)
+        ..color      = color.withValues(alpha: isOpen ? 0.18 : 0.30)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
     );
-    // Fill
-    canvas.drawRRect(rr, Paint()..color = color);
-    // Top highlight strip
-    canvas.save();
-    canvas.clipRRect(RRect.fromRectAndRadius(
-        Rect.fromLTWH(cx - w / 2, y - h / 2, w, h / 2), radius));
-    canvas.drawRRect(rr, Paint()..color = Colors.white.withOpacity(0.22));
-    canvas.restore();
-    // Bottom edge
-    canvas.drawRRect(rr,
-        Paint()
-          ..style       = PaintingStyle.stroke
-          ..color       = color.withOpacity(0.75)
-          ..strokeWidth = 1.0);
+
+    if (isOpen) {
+      // Open hi-hat: hollow rectangle (outline only) with tinted fill
+      canvas.drawRRect(rr,
+          Paint()..color = color.withValues(alpha: 0.20));
+      canvas.drawRRect(rr,
+          Paint()
+            ..style       = PaintingStyle.stroke
+            ..color       = color.withValues(alpha: 0.90)
+            ..strokeWidth = 2.0);
+      // Small "o" indicator above note
+      final tp = TextPainter(
+        text: TextSpan(text: 'o', style: TextStyle(
+          color: color.withValues(alpha: 0.85), fontSize: 7,
+          fontWeight: FontWeight.bold, fontFamily: 'DrummerBody',
+        )),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(cx - tp.width / 2, y - h / 2 - 9));
+    } else {
+      // Closed hi-hat / any other pad: solid filled rectangle
+      canvas.drawRRect(rr, Paint()..color = color);
+      // Top highlight strip
+      canvas.save();
+      canvas.clipRRect(RRect.fromRectAndRadius(
+          Rect.fromLTWH(cx - w / 2, y - h / 2, w, h / 2), radius));
+      canvas.drawRRect(rr, Paint()..color = Colors.white.withValues(alpha: 0.22));
+      canvas.restore();
+      // Bottom edge
+      canvas.drawRRect(rr,
+          Paint()
+            ..style       = PaintingStyle.stroke
+            ..color       = color.withValues(alpha: 0.75)
+            ..strokeWidth = 1.0);
+    }
   }
 
   // Hit zones — one colored target rectangle per lane at the hit line
@@ -314,7 +340,10 @@ class _NotesPainter extends CustomPainter {
     for (int i = 0; i < kDrumLanes.length; i++) {
       final cx    = i * laneW + laneW / 2;
       final color = NavaTheme.padColor(kDrumLanes[i]);
-      final flash = padFlashes.where((f) => f.pad == kDrumLanes[i]).firstOrNull;
+      // Match flashes from the lane's primary pad AND any alias pads
+      // (e.g. hihatOpen/hihatPedal both flash the HH lane).
+      final flash = padFlashes.where(
+          (f) => drumLaneIndex(f.pad) == i).firstOrNull;
       final hitT  = flash != null
           ? (1 - now.difference(flash.createdAt).inMilliseconds / 450.0).clamp(0.0, 1.0)
           : 0.0;
@@ -324,12 +353,12 @@ class _NotesPainter extends CustomPainter {
 
       // Background
       canvas.drawRRect(rr,
-          Paint()..color = color.withOpacity(0.08 + hitT * 0.18));
+          Paint()..color = color.withValues(alpha: 0.08 + hitT * 0.18));
       // Border
       canvas.drawRRect(rr,
           Paint()
             ..style       = PaintingStyle.stroke
-            ..color       = color.withOpacity(0.40 + hitT * 0.55)
+            ..color       = color.withValues(alpha: 0.40 + hitT * 0.55)
             ..strokeWidth = hitT > 0 ? 2.5 : 1.5);
     }
   }
@@ -345,37 +374,38 @@ class _NotesPainter extends CustomPainter {
       final color = NavaTheme.padColor(pad);
       final name  = kDrumLaneNames[i];
 
-      final flash = padFlashes.where((f) => f.pad == pad).firstOrNull;
+      final flash = padFlashes.where(
+          (f) => drumLaneIndex(f.pad) == i).firstOrNull;
       final ageMs = flash != null ? now.difference(flash.createdAt).inMilliseconds : 9999;
       final hitT  = flash != null ? (1 - ageMs / 450.0).clamp(0.0, 1.0) : 0.0;
 
       // Hit glow
       if (hitT > 0) {
         canvas.drawCircle(Offset(cx, padCY), padR * (1.4 + hitT * 0.3),
-          Paint()..color = color.withOpacity(hitT * 0.38)
+          Paint()..color = color.withValues(alpha: hitT * 0.38)
                  ..maskFilter = MaskFilter.blur(BlurStyle.normal, 22 * hitT));
       }
       // Body
       canvas.drawCircle(Offset(cx, padCY), padR,
-        Paint()..color = Color.lerp(const Color(0xFF1A2030), color.withOpacity(0.30), hitT * 0.85)!);
+        Paint()..color = Color.lerp(const Color(0xFF1A2030), color.withValues(alpha: 0.30), hitT * 0.85)!);
       // Outer ring
       canvas.drawCircle(Offset(cx, padCY), padR,
         Paint()..style = PaintingStyle.stroke
-               ..color = Color.lerp(color.withOpacity(0.55), color, hitT)!
+               ..color = Color.lerp(color.withValues(alpha: 0.55), color, hitT)!
                ..strokeWidth = 3.5);
       // Inner ring
       canvas.drawCircle(Offset(cx, padCY), padR * 0.65,
         Paint()..style = PaintingStyle.stroke
-               ..color = color.withOpacity(0.22 + hitT * 0.28)
+               ..color = color.withValues(alpha: 0.22 + hitT * 0.28)
                ..strokeWidth = 1.2);
       // Center dot
       canvas.drawCircle(Offset(cx, padCY - padR * 0.28), padR * 0.08,
-        Paint()..color = color.withOpacity(0.45 + hitT * 0.55));
+        Paint()..color = color.withValues(alpha: 0.45 + hitT * 0.55));
 
       // Label
       final tp = TextPainter(
         text: TextSpan(text: name, style: TextStyle(
-          color: Colors.white.withOpacity(0.60 + hitT * 0.40),
+          color: Colors.white.withValues(alpha: 0.60 + hitT * 0.40),
           fontSize: padR * 0.30, fontWeight: FontWeight.bold, fontFamily: 'DrummerBody',
         )),
         textDirection: TextDirection.ltr,
@@ -387,7 +417,7 @@ class _NotesPainter extends CustomPainter {
         final rT = 1 - hitT;
         canvas.drawCircle(Offset(cx, padCY), padR * (1.0 + rT * 1.0),
           Paint()..style = PaintingStyle.stroke
-                 ..color = color.withOpacity(hitT * 0.55)
+                 ..color = color.withValues(alpha: hitT * 0.55)
                  ..strokeWidth = 2.5 * hitT);
       }
     }
@@ -412,7 +442,7 @@ class _NotesPainter extends CustomPainter {
       canvas.translate(px, py);
       canvas.rotate(p.rotation + t * math.pi);
       canvas.drawRect(Rect.fromCenter(center: Offset.zero, width: sz, height: sz),
-        Paint()..color = p.color.withOpacity(opacity));
+        Paint()..color = p.color.withValues(alpha: opacity));
       canvas.restore();
     }
   }
@@ -429,12 +459,12 @@ class _NotesPainter extends CustomPainter {
       final isPerfect = flash.grade == HitGrade.perfect;
       final tp = TextPainter(
         text: TextSpan(text: flash.gradeLabel, style: TextStyle(
-          color:      isPerfect ? Colors.white.withOpacity(opacity) : flash.gradeColor.withOpacity(opacity),
+          color:      isPerfect ? Colors.white.withValues(alpha: opacity) : flash.gradeColor.withValues(alpha: opacity),
           fontSize:   isPerfect ? 15.0 : 12.0,
           fontWeight: FontWeight.bold,
           fontFamily: 'DrummerDisplay',
           letterSpacing: 1.5,
-          shadows: [Shadow(color: flash.gradeColor.withOpacity(opacity * 0.9), blurRadius: 10)],
+          shadows: [Shadow(color: flash.gradeColor.withValues(alpha: opacity * 0.9), blurRadius: 10)],
         )),
         textDirection: TextDirection.ltr,
       )..layout();

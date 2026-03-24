@@ -21,10 +21,10 @@ class BackingTrackService {
   static final BackingTrackService instance = BackingTrackService._();
   BackingTrackService._();
 
-  // Single-stem player (used when song.ogg is present).
+  // Single-stem player (song.ogg when present).
   final AudioPlayer _player = AudioPlayer();
 
-  // Multi-stem players (used when song.ogg is absent — one player per stem).
+  // Multi-stem players — one per non-drum stem, all kept in lock-step.
   final List<AudioPlayer> _stemPlayers = [];
   bool _isMultiStem = false;
 
@@ -56,36 +56,19 @@ class BackingTrackService {
   // ── Internal helpers ───────────────────────────────────────────────────────
 
   Future<void> _disposeStemPlayers() async {
-    for (final p in _stemPlayers) {
-      await p.dispose();
-    }
+    await Future.wait(_stemPlayers.map((p) => p.dispose()));
     _stemPlayers.clear();
-  }
-
-  Future<bool> _loadSingle(String path, bool isLocal) async {
-    try {
-      if (isLocal) {
-        await _player.setFilePath(path);
-      } else {
-        await _player.setAsset(path);
-      }
-      await _player.setVolume(_volume);
-      return true;
-    } catch (e) {
-      debugPrint('[BackingTrackService] Failed to load $path: $e');
-      return false;
-    }
   }
 
   // ── Load ──────────────────────────────────────────────────────────────────
 
   /// Load backing audio from an [AudioTrackSet].
   ///
-  /// • If song.ogg is present → single-player mode (full pre-mix).
-  /// • Otherwise              → multi-player mode: all non-drum, non-crowd
-  ///   stems (vocals, guitar, rhythm, bass, keys) played simultaneously.
+  /// • song.ogg present → single-player mode (full pre-mix).
+  /// • song.ogg absent  → multi-player mode: guitar + rhythm + vocals + bass +
+  ///   keys played simultaneously. Drums and crowd are always excluded.
   ///
-  /// Returns true when at least one player was loaded successfully.
+  /// All multi-stem operations use Future.wait() so players stay frame-accurate.
   Future<bool> loadPackage(AudioTrackSet audio) async {
     _state = BackingTrackState.loading;
     await _disposeStemPlayers();
@@ -94,28 +77,35 @@ class BackingTrackService {
     final singlePath = audio.primaryBackingPath; // song.ogg or null
 
     if (singlePath != null) {
-      // ── Single-stem (song.ogg) ───────────────────────────────────────────
-      final ok = await _loadSingle(singlePath, audio.isLocal);
-      if (!ok) {
+      // ── Single-stem (song.ogg) ────────────────────────────────────────────
+      try {
+        if (audio.isLocal) {
+          await _player.setFilePath(singlePath);
+        } else {
+          await _player.setAsset(singlePath);
+        }
+        await _player.setVolume(_volume);
+        _state = BackingTrackState.ready;
+        debugPrint('[BackingTrackService] Single stem: $singlePath');
+        return true;
+      } catch (e) {
         _state = BackingTrackState.noTrack;
+        debugPrint('[BackingTrackService] Failed: $singlePath — $e');
         return false;
       }
-      _state = BackingTrackState.ready;
-      debugPrint('[BackingTrackService] Single stem loaded: $singlePath');
-      return true;
     }
 
-    // ── Multi-stem (vocals + guitar + rhythm + bass + keys) ─────────────────
-    final paths = audio.backingPaths; // excludes drums + crowd
+    // ── Multi-stem (guitar + rhythm + vocals + bass + keys) ──────────────────
+    // backingPaths already excludes drums and crowd.
+    final paths = audio.backingPaths;
     if (paths.isEmpty) {
       _state = BackingTrackState.noTrack;
       debugPrint('[BackingTrackService] No backing stems available');
       return false;
     }
 
-    _isMultiStem = true;
-    int loaded = 0;
-    for (final path in paths) {
+    // Create and load all players in parallel.
+    final players = await Future.wait(paths.map((path) async {
       final p = AudioPlayer();
       try {
         if (audio.isLocal) {
@@ -124,23 +114,26 @@ class BackingTrackService {
           await p.setAsset(path);
         }
         await p.setVolume(_volume);
-        _stemPlayers.add(p);
-        loaded++;
         debugPrint('[BackingTrackService] Stem loaded: $path');
+        return p;
       } catch (e) {
         await p.dispose();
         debugPrint('[BackingTrackService] Stem failed: $path — $e');
+        return null;
       }
-    }
+    }));
 
-    if (loaded == 0) {
-      _isMultiStem = false;
+    final loaded = players.whereType<AudioPlayer>().toList();
+    if (loaded.isEmpty) {
       _state = BackingTrackState.noTrack;
       return false;
     }
 
+    _stemPlayers.addAll(loaded);
+    _isMultiStem = true;
     _state = BackingTrackState.ready;
-    debugPrint('[BackingTrackService] Multi-stem ready: $loaded/${paths.length} stems');
+    debugPrint('[BackingTrackService] Multi-stem ready: '
+        '${loaded.length}/${paths.length} stems');
     return true;
   }
 
@@ -150,7 +143,7 @@ class BackingTrackService {
     if (_state != BackingTrackState.ready &&
         _state != BackingTrackState.paused) return;
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.play(); }
+      await Future.wait(_stemPlayers.map((p) => p.play()));
     } else {
       await _player.play();
     }
@@ -159,7 +152,7 @@ class BackingTrackService {
 
   Future<void> pause() async {
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.pause(); }
+      await Future.wait(_stemPlayers.map((p) => p.pause()));
     } else {
       await _player.pause();
     }
@@ -168,7 +161,7 @@ class BackingTrackService {
 
   Future<void> resume() async {
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.play(); }
+      await Future.wait(_stemPlayers.map((p) => p.play()));
     } else {
       await _player.play();
     }
@@ -177,10 +170,10 @@ class BackingTrackService {
 
   Future<void> stop() async {
     if (_isMultiStem) {
-      for (final p in _stemPlayers) {
+      await Future.wait(_stemPlayers.map((p) async {
         await p.stop();
         await p.seek(Duration.zero);
-      }
+      }));
     } else {
       await _player.stop();
       await _player.seek(Duration.zero);
@@ -191,7 +184,7 @@ class BackingTrackService {
   Future<void> seekTo(double seconds) async {
     final dur = Duration(milliseconds: (seconds * 1000).round());
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.seek(dur); }
+      await Future.wait(_stemPlayers.map((p) => p.seek(dur)));
     } else {
       await _player.seek(dur);
     }
@@ -202,7 +195,7 @@ class BackingTrackService {
   Future<void> setTempoFactor(double factor) async {
     _tempoFactor = factor.clamp(0.5, 1.2);
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.setSpeed(_tempoFactor); }
+      await Future.wait(_stemPlayers.map((p) => p.setSpeed(_tempoFactor)));
     } else {
       await _player.setSpeed(_tempoFactor);
     }
@@ -211,7 +204,7 @@ class BackingTrackService {
   Future<void> setVolume(double v) async {
     _volume = v.clamp(0, 1);
     if (_isMultiStem) {
-      for (final p in _stemPlayers) { await p.setVolume(_volume); }
+      await Future.wait(_stemPlayers.map((p) => p.setVolume(_volume)));
     } else {
       await _player.setVolume(_volume);
     }

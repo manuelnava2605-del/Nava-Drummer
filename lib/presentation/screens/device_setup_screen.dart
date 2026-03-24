@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../domain/entities/entities.dart';
 import '../../data/datasources/local/midi_engine.dart';
+import '../../l10n/strings.dart';
 import '../theme/nava_theme.dart';
 
 class DeviceSetupScreen extends StatefulWidget {
@@ -25,11 +27,17 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
   bool _isScanning = false;
   SetupStep _step = SetupStep.selectDevice;
 
-  // For manual pad mapping
-  // ignore: unused_field
-  final Map<DrumPad, int?> _manualMapping = {};
+  // Pad mapping — note (MIDI number) → DrumPad
+  // Seeded from brand defaults in _proceedToMapping(); updated live as user hits pads.
+  Map<int, DrumPad> _customNoteMap = {};
   DrumPad? _awaitingPad;
   StreamSubscription? _mappingSub;
+  StreamSubscription? _deviceListSub;
+
+  // ── MIDI monitor (shows last received event so user can confirm signal) ────
+  StreamSubscription? _monitorSub;
+  String _midiStatus = 'Esperando señal MIDI…';
+  int    _midiEventCount = 0;
 
   @override
   void initState() {
@@ -42,7 +50,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
     final devices = await widget.midiEngine.getConnectedDevices();
     if (mounted) setState(() => _devices = devices);
 
-    widget.midiEngine.deviceList.listen((devices) {
+    _deviceListSub = widget.midiEngine.deviceList.listen((devices) {
       if (mounted) setState(() => _devices = devices);
     });
   }
@@ -50,6 +58,8 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
   @override
   void dispose() {
     _mappingSub?.cancel();
+    _monitorSub?.cancel();
+    _deviceListSub?.cancel();
     super.dispose();
   }
 
@@ -126,7 +136,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('CONNECT KIT', style: TextStyle(
+              Text(S.of(context).deviceTitle, style: const TextStyle(
                 fontFamily: 'DrummerDisplay', fontSize: 14,
                 color: NavaTheme.textPrimary, letterSpacing: 2,
               )),
@@ -138,7 +148,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
           ).animate().fadeIn(delay: 200.ms),
 
           const SizedBox(height: 8),
-          const Text('Select your electronic drum kit', style: TextStyle(
+          Text(S.of(context).deviceSubtitle, style: const TextStyle(
             fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textSecondary,
           )).animate().fadeIn(delay: 300.ms),
           const SizedBox(height: 24),
@@ -159,7 +169,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: _proceedToMapping,
-                child: const Text('CONFIGURE PADS →'),
+                child: Text(S.of(context).deviceConfigPads),
               ),
             ).animate().slideY(begin: 0.3, duration: 300.ms),
           ],
@@ -167,7 +177,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
           // Skip (use virtual / acoustic)
           TextButton(
             onPressed: _skipToApp,
-            child: const Text('Skip — No MIDI kit', style: TextStyle(
+            child: Text(S.of(context).deviceSkip, style: const TextStyle(
               fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textMuted,
             )),
           ),
@@ -189,10 +199,10 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: isSelected ? NavaTheme.neonCyan.withOpacity(0.12) : NavaTheme.surfaceCard,
+          color: isSelected ? NavaTheme.neonCyan.withValues(alpha: 0.12) : NavaTheme.surfaceCard,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isSelected ? NavaTheme.neonCyan : NavaTheme.neonCyan.withOpacity(0.15),
+            color: isSelected ? NavaTheme.neonCyan : NavaTheme.neonCyan.withValues(alpha: 0.15),
             width: isSelected ? 2 : 1,
           ),
           boxShadow: isSelected ? NavaTheme.cyanGlow : null,
@@ -203,7 +213,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
             Container(
               width: 48, height: 48,
               decoration: BoxDecoration(
-                color: _brandColor(device.brand).withOpacity(0.15),
+                color: _brandColor(device.brand).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Center(
@@ -287,11 +297,6 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
       DrumPad.floorTom, DrumPad.crash1, DrumPad.ride,
     ];
 
-    final defaultMapping = DrumMapping(
-      deviceId: _selectedDevice?.id ?? 'default',
-      noteMap: StandardDrumMaps.forBrand(_selectedDevice?.brand ?? DrumKitBrand.generic),
-    );
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
@@ -308,12 +313,48 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
                 : 'Auto-mapped for ${_selectedDevice?.brand.name.toUpperCase()}. Tap to override.',
             style: const TextStyle(fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textSecondary),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 10),
+          // ── MIDI signal monitor ───────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: _midiEventCount > 0
+                  ? NavaTheme.neonGreen.withValues(alpha: 0.08)
+                  : NavaTheme.neonMagenta.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: _midiEventCount > 0
+                    ? NavaTheme.neonGreen.withValues(alpha: 0.4)
+                    : NavaTheme.neonMagenta.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(children: [
+              Icon(
+                _midiEventCount > 0 ? Icons.sensors : Icons.sensors_off,
+                size: 14,
+                color: _midiEventCount > 0 ? NavaTheme.neonGreen : NavaTheme.neonMagenta,
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text(
+                _midiStatus,
+                style: TextStyle(
+                  fontFamily: 'DrummerBody',
+                  fontSize: 12,
+                  color: _midiStatus.startsWith('✓')
+                      ? const Color(0xFF00E676)
+                      : _midiStatus.startsWith('⚠')
+                          ? const Color(0xFFFFAB40)
+                          : NavaTheme.textSecondary,
+                ),
+              )),
+            ]),
+          ),
+          const SizedBox(height: 14),
 
           Expanded(
             child: ListView.builder(
               itemCount: pads.length,
-              itemBuilder: (_, i) => _buildPadRow(pads[i], defaultMapping),
+              itemBuilder: (_, i) => _buildPadRow(pads[i]),
             ),
           ),
 
@@ -321,7 +362,20 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
             width: double.infinity,
             child: ElevatedButton(
               onPressed: () {
-                widget.onDeviceSelected(_selectedDevice!, defaultMapping);
+                // _selectedDevice should never be null here (guarded by
+                // _proceedToMapping) but fall back to a virtual device so the
+                // button is never silently disabled.
+                final device = _selectedDevice ?? const MidiDevice(
+                  id: 'none', name: 'No Device',
+                  transport: DeviceTransport.virtual,
+                );
+                final mapping = DrumMapping(
+                  deviceId: device.id,
+                  noteMap:  _customNoteMap.isNotEmpty
+                      ? _customNoteMap
+                      : StandardDrumMaps.generalMidi,
+                );
+                widget.onDeviceSelected(device, mapping);
               },
               child: const Text('START PLAYING →'),
             ),
@@ -332,9 +386,10 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
     );
   }
 
-  Widget _buildPadRow(DrumPad pad, DrumMapping mapping) {
-    final isAwaiting = _awaitingPad == pad;
-    final assignedNote = mapping.noteMap.entries
+  Widget _buildPadRow(DrumPad pad) {
+    final isAwaiting   = _awaitingPad == pad;
+    // Find MIDI note currently assigned to this pad in the live custom map.
+    final assignedNote = _customNoteMap.entries
         .where((e) => e.value == pad)
         .map((e) => e.key)
         .firstOrNull;
@@ -346,10 +401,10 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isAwaiting ? NavaTheme.neonMagenta.withOpacity(0.1) : NavaTheme.surfaceCard,
+          color: isAwaiting ? NavaTheme.neonMagenta.withValues(alpha: 0.1) : NavaTheme.surfaceCard,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isAwaiting ? NavaTheme.neonMagenta : NavaTheme.neonCyan.withOpacity(0.15),
+            color: isAwaiting ? NavaTheme.neonMagenta : NavaTheme.neonCyan.withValues(alpha: 0.15),
             width: isAwaiting ? 2 : 1,
           ),
         ),
@@ -358,7 +413,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
             Container(
               width: 36, height: 36,
               decoration: BoxDecoration(
-                color: _padColor(pad).withOpacity(0.2),
+                color: _padColor(pad).withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Center(
@@ -393,23 +448,121 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
   }
 
   // ── Actions ───────────────────────────────────────────────────────────────
-  void _toggleScan() async {
+  Future<void> _toggleScan() async {
     if (_isScanning) {
       await widget.midiEngine.stopBluetoothScan();
-      setState(() => _isScanning = false);
-    } else {
-      await widget.midiEngine.startBluetoothScan();
-      setState(() => _isScanning = true);
-      Future.delayed(const Duration(seconds: 30), () {
-        if (mounted && _isScanning) {
-          widget.midiEngine.stopBluetoothScan();
-          setState(() => _isScanning = false);
+      if (mounted) setState(() => _isScanning = false);
+      return;
+    }
+
+    // Request runtime BT permissions (Android 12+ needs BLUETOOTH_SCAN +
+    // BLUETOOTH_CONNECT; older versions need location).
+    final granted = await _requestBluetoothPermissions();
+    if (!granted) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: NavaTheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(S.of(context).deviceBtPermTitle,
+              style: const TextStyle(fontFamily: 'DrummerDisplay',
+                  fontSize: 15, color: NavaTheme.textPrimary)),
+          content: Text(S.of(context).deviceBtPermMsg,
+              style: const TextStyle(fontFamily: 'DrummerBody',
+                  fontSize: 13, color: NavaTheme.textSecondary)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(S.of(context).ok,
+                  style: const TextStyle(color: NavaTheme.neonCyan)),
+            ),
+            TextButton(
+              onPressed: () { Navigator.pop(context); openAppSettings(); },
+              child: const Text('Open settings',
+                  style: TextStyle(color: NavaTheme.neonMagenta,
+                      fontFamily: 'DrummerBody')),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    await widget.midiEngine.startBluetoothScan();
+    if (mounted) setState(() => _isScanning = true);
+    Future.delayed(const Duration(seconds: 30), () {
+      if (mounted && _isScanning) {
+        widget.midiEngine.stopBluetoothScan();
+        setState(() => _isScanning = false);
+      }
+    });
+  }
+
+  Future<bool> _requestBluetoothPermissions() async {
+    final statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+    return statuses.values.every(
+      (s) => s.isGranted || s.isLimited || s.isPermanentlyDenied == false,
+    );
+  }
+
+  Future<void> _proceedToMapping() async {
+    // Seed the custom map with brand defaults so known pads already show notes.
+    final brand = _selectedDevice?.brand ?? DrumKitBrand.generic;
+    _customNoteMap = Map.of(StandardDrumMaps.forBrand(brand));
+
+    // Re-issue connectDevice so the native layer (re-)routes events from BT
+    // devices to the event channel before the monitor subscription starts.
+    if (_selectedDevice != null && _selectedDevice!.id != 'none') {
+      try {
+        await widget.midiEngine.connectDevice(_selectedDevice!.id);
+      } catch (_) {}
+    }
+
+    if (mounted) setState(() => _step = SetupStep.mapPads);
+    _startMidiMonitor();
+  }
+
+  /// Passive listener that shows raw MIDI events so the user can confirm
+  /// that the kit is actually sending data before mapping.
+  /// Also retries connectDevice after 5 s if no events received (BT routing fix).
+  void _startMidiMonitor() {
+    _monitorSub?.cancel();
+    _midiEventCount = 0;
+    _midiStatus = 'Buscando señal MIDI...';
+
+    // BT retry: if no events in 5 s, re-issue connectDevice to force routing.
+    Timer? retryTimer;
+    if (_selectedDevice != null && _selectedDevice!.id != 'none') {
+      retryTimer = Timer(const Duration(seconds: 5), () async {
+        if (_midiEventCount == 0 && mounted) {
+          setState(() => _midiStatus = 'Reintentando conexión...');
+          try {
+            await widget.midiEngine.connectDevice(_selectedDevice!.id);
+          } catch (_) {}
+          if (mounted && _midiEventCount == 0) {
+            setState(() => _midiStatus =
+                '⚠ Sin señal MIDI. Verifica que el dispositivo está en modo MIDI y enviando notas.');
+          }
         }
       });
     }
-  }
 
-  void _proceedToMapping() => setState(() => _step = SetupStep.mapPads);
+    _monitorSub = widget.midiEngine.midiEvents.listen((e) {
+      if (!mounted) return;
+      retryTimer?.cancel();
+      setState(() {
+        _midiEventCount++;
+        _midiStatus =
+            '✓ Señal recibida — ch${e.channel} nota ${e.note} vel ${e.velocity}  '
+            '($_midiEventCount eventos)';
+      });
+    });
+  }
 
   void _skipToApp() {
     final genericMapping = DrumMapping(
@@ -429,13 +582,21 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
   void _startMapping(DrumPad pad) {
     setState(() => _awaitingPad = pad);
     _mappingSub?.cancel();
+    // Accept any event with velocity > 0 — covers kits that send NoteOff with
+    // non-zero velocity, or whose status byte isn't decoded as 0x90 by the
+    // native layer but still carries a valid note + velocity payload.
     _mappingSub = widget.midiEngine.midiEvents
-        .where((e) => e.isNoteOn)
+        .where((e) => e.velocity > 0)
         .first
         .asStream()
         .listen((event) {
           if (mounted) {
-            setState(() => _awaitingPad = null);
+            setState(() {
+              // Remove any previous assignment for this pad, then store the new note.
+              _customNoteMap.removeWhere((_, v) => v == pad);
+              _customNoteMap[event.note] = pad;
+              _awaitingPad = null;
+            });
           }
         });
   }
@@ -489,9 +650,9 @@ class _StepIndicator extends StatelessWidget {
     return Row(
       children: [
         _Dot(label: '1  CONNECT', active: currentStep == SetupStep.selectDevice),
-        Expanded(child: Container(height: 1, color: NavaTheme.neonCyan.withOpacity(0.2))),
+        Expanded(child: Container(height: 1, color: NavaTheme.neonCyan.withValues(alpha: 0.2))),
         _Dot(label: '2  CALIBRATE', active: currentStep == SetupStep.mapPads),
-        Expanded(child: Container(height: 1, color: NavaTheme.neonCyan.withOpacity(0.2))),
+        Expanded(child: Container(height: 1, color: NavaTheme.neonCyan.withValues(alpha: 0.2))),
         const _Dot(label: '3  PLAY', active: false),
       ],
     );
@@ -534,9 +695,9 @@ class _ScanButton extends StatelessWidget {
     child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: isScanning ? NavaTheme.neonCyan.withOpacity(0.15) : NavaTheme.surfaceCard,
+        color: isScanning ? NavaTheme.neonCyan.withValues(alpha: 0.15) : NavaTheme.surfaceCard,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: isScanning ? NavaTheme.neonCyan : NavaTheme.neonCyan.withOpacity(0.3)),
+        border: Border.all(color: isScanning ? NavaTheme.neonCyan : NavaTheme.neonCyan.withValues(alpha: 0.3)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -569,9 +730,9 @@ class _TransportBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withOpacity(0.5)),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
       ),
       child: Text(label, style: TextStyle(
         fontFamily: 'DrummerBody', fontSize: 9, color: color, fontWeight: FontWeight.bold,

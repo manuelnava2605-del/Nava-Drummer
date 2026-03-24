@@ -1,19 +1,24 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // NavaDrummer — Song Package Loader
 //
-// Converts a Clone Hero / RBN song bundle (song.ini + notes.mid + stems)
+// Converts a MIDI-only song bundle (notes.mid + optional OGG stems)
 // into a fully-loaded SongPackage ready for PracticeEngine and UI.
 //
 // Pipeline:
-//   1. Read  song.ini        → SongIni (metadata + flags)
-//   2. Parse notes.mid       → List<NoteEvent> (drum chart)
-//   3. Derive SongSyncProfile from MIDI tempo map + song.ini delay
-//   4. Scan available stems  → AudioTrackSet
-//   5. Build Song entity     → SongPackage
+//   1. Parse notes.mid  → List<NoteEvent> using GM standard mapping
+//   2. Read song.ini    → optional metadata (title/artist/delay) — graceful
+//                         fallback to MIDI-derived values if file is absent
+//   3. Derive SongSyncProfile from MIDI tempo map + optional ini delay
+//   4. Scan OGG stems   → AudioTrackSet (song.ogg / guitar.ogg / vocals.ogg …)
+//   5. Build Song entity → SongPackage
 //
-// Single entry point: SongPackageLoader.load(packageAssetDir)
+// Clone Hero / Rock Band Network format is NOT supported. All charts must
+// use the GM percussion standard (channel 9, note numbers 35–81).
+// OGG stems are kept for future vocal / backing-track support.
 //
-// Path routing (automatic — callers don't need to know):
+// Single entry point: SongPackageLoader.load(packageDir)
+//
+// Path routing (automatic — callers do not need to know):
 //   'assets/songs/...'  → Flutter asset bundle  (rootBundle)
 //   '/data/...'         → Local filesystem       (dart:io File)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,178 +36,106 @@ import 'song_ini_parser.dart';
 // SongPackageLoader
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Loads a Clone Hero / RBN song bundle from the Flutter asset bundle.
-///
-/// Usage:
-/// ```dart
-/// final package = await SongPackageLoader.load('assets/songs/aun_coda');
-/// await engine.loadSongPackage(package);
-/// ```
 class SongPackageLoader {
   SongPackageLoader._();
 
-  // ── Known stem filenames ────────────────────────────────────────────────────
+  // ── Known OGG stem filenames ────────────────────────────────────────────────
   static const Map<StemType, List<String>> _stemCandidates = {
-    StemType.drums:   ['drums.ogg',   'drum.ogg'],
-    StemType.guitar:  ['guitar.ogg',  'lead.ogg'],
-    StemType.rhythm:  ['rhythm.ogg',  'rhytm.ogg'],
-    StemType.vocals:  ['vocals.ogg',  'vocal.ogg'],
-    StemType.song:    ['song.ogg',    'mix.ogg',  'preview.ogg'],
-    StemType.keys:    ['keys.ogg',    'keyboard.ogg'],
-    StemType.bass:    ['bass.ogg'],
-    StemType.crowd:   ['crowd.ogg'],
+    StemType.song:   ['song.ogg',    'mix.ogg',   'preview.ogg'],
+    StemType.vocals: ['vocals.ogg',  'vocal.ogg'],
+    StemType.guitar: ['guitar.ogg',  'lead.ogg'],
+    StemType.rhythm: ['rhythm.ogg',  'rhytm.ogg'],
+    StemType.bass:   ['bass.ogg'],
+    StemType.keys:   ['keys.ogg',    'keyboard.ogg'],
+    StemType.drums:  ['drums.ogg',   'drum.ogg'],
+    StemType.crowd:  ['crowd.ogg'],
   };
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
-  /// Returns true if [packageDir] is a local filesystem path (downloaded song).
-  /// Returns false if it is a Flutter asset bundle path.
   static bool _isLocalPath(String packageDir) => packageDir.startsWith('/');
 
-  /// Load and parse a complete song package from [packageAssetDir].
+  /// Load and parse a complete song package from [packageDir].
   ///
-  /// Accepts both Flutter asset paths ('assets/songs/aun_coda') and
-  /// absolute local filesystem paths ('/data/.../song_cache/aun_coda').
-  /// Routing is automatic — callers do not need to distinguish.
+  /// Accepts both Flutter asset paths ('assets/songs/foo') and
+  /// absolute local filesystem paths ('/data/.../song_cache/foo').
   ///
-  /// Throws [SongPackageLoadException] if the package is invalid.
-  static Future<SongPackage> load(String packageAssetDir) async {
-    // ── Step 1: Parse song.ini ────────────────────────────────────────────────
-    final ini = await _loadIni(packageAssetDir);
-    debugPrint('[SongPackageLoader] Loaded ini: $ini');
-
-    // ── Step 2: Detect drum mapping format from ini flags ────────────────────
-    //   • pro_drums = True + diff_drums_real >= 0 → Clone Hero Expert (95–100)
-    //   • diff_drums >= 0 only                    → Clone Hero Easy (60–64)
-    //   • Neither                                 → GM fallback (35–81)
-    final isProDrums   = ini.isProDrums && ini.diffDrumsReal >= 0;
-    final hasAnyDrums  = ini.diffDrums >= 0 || ini.diffDrumsReal >= 0;
-
-    // ── Step 3: Parse notes.mid ───────────────────────────────────────────────
-    final midiBytes = await _loadMidiBytes(packageAssetDir);
-    final parser    = MidiFileParser();
-
-    // Try to parse with Clone Hero Expert mapping first if flagged as pro drums.
-    // Fall back to Easy → GM if the expert parse yields no notes.
-    List<NoteEvent> chart = const [];
-    bool isCloneHero = false;
-
-    if (hasAnyDrums) {
-      if (isProDrums) {
-        chart = _parse(midiBytes, packageAssetDir, StandardDrumMaps.cloneHeroExpert, parser);
-        if (chart.isNotEmpty) {
-          isCloneHero = true;
-          debugPrint('[SongPackageLoader] Using Clone Hero Expert mapping → ${chart.length} notes');
-        }
-      }
-      if (chart.isEmpty) {
-        chart = _parse(midiBytes, packageAssetDir, StandardDrumMaps.cloneHeroEasy, parser);
-        if (chart.isNotEmpty) {
-          isCloneHero = true;
-          debugPrint('[SongPackageLoader] Using Clone Hero Easy mapping → ${chart.length} notes');
-        }
-      }
+  /// Throws [SongPackageLoadException] if notes.mid is missing or empty.
+  static Future<SongPackage> load(String packageDir) async {
+    // ── Step 1: Load song.ini (optional — metadata only) ─────────────────────
+    SongIni? ini;
+    try {
+      ini = await _loadIni(packageDir);
+      debugPrint('[SongPackageLoader] ini: ${ini.name} — ${ini.artist}');
+    } catch (_) {
+      debugPrint('[SongPackageLoader] No song.ini found — using MIDI-derived metadata');
     }
-    if (chart.isEmpty) {
-      chart = _parse(midiBytes, packageAssetDir, StandardDrumMaps.generalMidi, parser);
-      debugPrint('[SongPackageLoader] Using GM fallback mapping → ${chart.length} notes');
+
+    // ── Step 2: Parse notes.mid with GM mapping ───────────────────────────────
+    final ByteData midiBytes;
+    try {
+      midiBytes = await _loadMidiBytes(packageDir);
+    } catch (e) {
+      throw SongPackageLoadException(
+        'Cannot read notes.mid at $packageDir: $e',
+      );
     }
+
+    final parser     = MidiFileParser();
+    final gmMapping  = DrumMapping(
+      deviceId: 'gm',
+      noteMap:  StandardDrumMaps.generalMidi,
+    );
+    final midiResult = parser.parse(midiBytes.buffer.asUint8List(), gmMapping);
+    final chart      = midiResult.noteEvents;
 
     if (chart.isEmpty) {
       throw SongPackageLoadException(
-        'notes.mid at $packageAssetDir produced no drum events. '
-        'Check drum mapping or MIDI format.',
+        'No playable GM drum notes found in $packageDir/notes.mid. '
+        'Ensure the file uses channel 9 and standard GM note numbers (35–81).',
       );
     }
 
-    // Re-parse to get MidiParseResult (BPM, time sig) regardless of mapping path
-    final midiResult = parser.parse(
-      midiBytes.buffer.asUint8List(),
-      DrumMapping(
-        deviceId: isCloneHero ? 'clone_hero' : 'gm',
-        noteMap: isCloneHero
-            ? (isProDrums ? StandardDrumMaps.cloneHeroExpert : StandardDrumMaps.cloneHeroEasy)
-            : StandardDrumMaps.generalMidi,
-      ),
-    );
+    debugPrint('[SongPackageLoader] GM chart: ${chart.length} notes, '
+        'first=${chart.first.timeSeconds.toStringAsFixed(3)}s');
 
-    // ── Step 4: Dedup co-incident pro cymbal marker notes ────────────────────
-    // Clone Hero Expert pro drums emit both a base note (97-100) AND a cymbal
-    // marker note (110-112) at the same tick. Both map to drum pads, which
-    // would produce double hits. Deduplicate by dropping extra events at the
-    // same tick that have the same pad.
-    final dedupedChart = isCloneHero ? _deduplicateCoincidentNotes(chart) : chart;
-
-    debugPrint('[SongPackageLoader] After dedup: ${dedupedChart.length} notes '
-        '(removed ${chart.length - dedupedChart.length} duplicates)');
-
-    debugPrint('[SongPackageLoader] Chart ready: ${dedupedChart.length} notes, '
-        'firstNote=${dedupedChart.isNotEmpty ? dedupedChart.first.timeSeconds.toStringAsFixed(3) : "n/a"}s');
-
-    // ── Step 5: Derive SyncProfile from MIDI + ini ───────────────────────────
+    // ── Step 3: Derive SyncProfile ────────────────────────────────────────────
     final syncProfile = _buildSyncProfile(
-      ini:      ini,
+      ini:        ini,
       midiResult: midiResult,
-      songId:   _songIdFromDir(packageAssetDir),
+      songId:     _songIdFromDir(packageDir),
     );
 
-    debugPrint('[SongPackageLoader] SyncProfile: BPM=${syncProfile.bpm.toStringAsFixed(1)}, '
+    debugPrint('[SongPackageLoader] SyncProfile: '
+        'BPM=${syncProfile.bpm.toStringAsFixed(1)}, '
         'chartOffset=${syncProfile.chartOffsetSeconds.toStringAsFixed(3)}s, '
         'timeSig=${syncProfile.timeSignature}');
 
-    // ── Step 6: Scan available audio stems ───────────────────────────────────
-    final audio = await _buildAudioTrackSet(packageAssetDir);
-    debugPrint('[SongPackageLoader] Stems: ${audio.availableStems.map((s) => s.name).join(', ')}');
+    // ── Step 4: Scan OGG stems ────────────────────────────────────────────────
+    final audio = await _buildAudioTrackSet(packageDir);
+    debugPrint('[SongPackageLoader] Stems: '
+        '${audio.availableStems.map((s) => s.name).join(', ')}');
 
-    // ── Step 7: Build Song entity ────────────────────────────────────────────
-    final song = _buildSong(ini, midiResult, syncProfile, packageAssetDir, audio);
+    // ── Step 5: Build Song entity ─────────────────────────────────────────────
+    final song = _buildSong(ini, midiResult, syncProfile, packageDir, audio);
 
     return SongPackage(
-      song:              song,
-      chart:             dedupedChart,
-      syncProfile:       syncProfile,
-      audio:             audio,
-      isCloneHeroFormat: isCloneHero,
+      song:        song,
+      chart:       chart,
+      syncProfile: syncProfile,
+      audio:       audio,
     );
-  }
-
-  // ── Private helpers ─────────────────────────────────────────────────────────
-
-  /// Quick-parse MIDI with a given drum mapping; returns the note events.
-  static List<NoteEvent> _parse(
-    ByteData midiBytes,
-    String packageDir,
-    Map<int, DrumPad> noteMap,
-    MidiFileParser parser,
-  ) {
-    try {
-      final result = parser.parse(
-        midiBytes.buffer.asUint8List(),
-        DrumMapping(deviceId: 'probe', noteMap: noteMap),
-      );
-      return result.noteEvents;
-    } catch (e) {
-      debugPrint('[SongPackageLoader] Parse error with mapping: $e');
-      return const [];
-    }
   }
 
   // ── Source-agnostic file loaders ────────────────────────────────────────────
 
-  /// Reads a text file from [packageDir]/song.ini, supporting both
-  /// asset bundle paths and local filesystem paths.
   static Future<SongIni> _loadIni(String packageDir) async {
-    try {
-      final text = _isLocalPath(packageDir)
-          ? await File('$packageDir/song.ini').readAsString()
-          : await rootBundle.loadString('$packageDir/song.ini');
-      return SongIniParser.parse(text);
-    } catch (e) {
-      throw SongPackageLoadException('Cannot read song.ini at $packageDir: $e');
-    }
+    final text = _isLocalPath(packageDir)
+        ? await File('$packageDir/song.ini').readAsString()
+        : await rootBundle.loadString('$packageDir/song.ini');
+    return SongIniParser.parse(text);
   }
 
-  /// Reads notes.mid as [ByteData], supporting both asset and local paths.
   static Future<ByteData> _loadMidiBytes(String packageDir) async {
     if (_isLocalPath(packageDir)) {
       final bytes = await File('$packageDir/notes.mid').readAsBytes();
@@ -211,75 +144,68 @@ class SongPackageLoader {
     return rootBundle.load('$packageDir/notes.mid');
   }
 
-  /// Build [SongSyncProfile] from MIDI data and ini metadata.
-  ///
-  /// Chart note times are kept exactly as parsed from MIDI (no normalization).
-  /// Audio starts at t=0 with the chart. Real intros (e.g. 42s before first
-  /// drum hit) are preserved. Only ini.delay shifts the audio start.
+  // ── SyncProfile builder ────────────────────────────────────────────────────
+
   static SongSyncProfile _buildSyncProfile({
-    required SongIni ini,
+    required SongIni?        ini,
     required MidiParseResult midiResult,
-    required String songId,
+    required String          songId,
   }) {
-    final bpmFromMidi = midiResult.bpm;
-    final bpm         = bpmFromMidi > 0 ? bpmFromMidi : 120.0;
-
-    final timeSig      = '${midiResult.timeSignature.numerator}/${midiResult.timeSignature.denominator}';
-    final beatsPerBar  = _beatsPerBar(midiResult.timeSignature.numerator,
-                                      midiResult.timeSignature.denominator);
-    final subdivisions = _subdivisions(midiResult.timeSignature.numerator,
-                                       midiResult.timeSignature.denominator);
-
-    // chartOffsetSeconds = ini delay only.  No firstNoteSeconds compensation.
-    final chartOffsetSec = (ini.delayMs / 1000.0).clamp(0.0, double.infinity);
-
-    // audioOffsetSeconds = 0: audio and chart share the same t=0 origin.
-    const audioOffsetSec = 0.0;
-
-    final songLengthSec = ini.songLengthMs > 0
-        ? ini.songLengthMs / 1000.0
+    final bpm        = midiResult.bpm > 0 ? midiResult.bpm : 120.0;
+    final timeSig    = '${midiResult.timeSignature.numerator}/'
+                       '${midiResult.timeSignature.denominator}';
+    final bpb        = _beatsPerBar(midiResult.timeSignature.numerator,
+                                    midiResult.timeSignature.denominator);
+    final subs       = _subdivisions(midiResult.timeSignature.numerator,
+                                     midiResult.timeSignature.denominator);
+    final delayMs    = ini?.delayMs ?? 0;
+    final chartOff   = (delayMs / 1000.0).clamp(0.0, double.infinity);
+    final songLenSec = (ini?.songLengthMs ?? 0) > 0
+        ? ini!.songLengthMs / 1000.0
         : midiResult.totalDuration.inMilliseconds / 1000.0;
 
     return SongSyncProfile(
       songId:             songId,
       bpm:                bpm,
       timeSignature:      timeSig,
-      beatsPerBar:        beatsPerBar,
-      subdivisions:       subdivisions,
-      audioOffsetSeconds: audioOffsetSec,
-      chartOffsetSeconds: chartOffsetSec,
-      songLengthSeconds:  songLengthSec,
-      notes: 'Auto-derived from ${ini.name} by ${ini.artist}. '
+      beatsPerBar:        bpb,
+      subdivisions:       subs,
+      audioOffsetSeconds: 0.0,
+      chartOffsetSeconds: chartOff,
+      songLengthSeconds:  songLenSec,
+      notes: 'Auto-derived from MIDI. '
              'BPM=$bpm, timeSig=$timeSig, '
-             'chartOffset=${chartOffsetSec.toStringAsFixed(3)}s (delayMs=${ini.delayMs}), '
-             'audioOffset=0 (raw MIDI times preserved).',
+             'chartOffset=${chartOff.toStringAsFixed(3)}s (delayMs=$delayMs).',
     );
   }
 
-  /// Scan the package directory for known stem filenames.
-  ///
-  /// For asset paths: probes via [rootBundle.load] (try/catch).
-  /// For local paths: uses [File.existsSync] (cheaper, no exception overhead).
+  // ── AudioTrackSet scanner ─────────────────────────────────────────────────
+
   static Future<AudioTrackSet> _buildAudioTrackSet(String packageDir) async {
     final isLocal = _isLocalPath(packageDir);
     final found   = <StemType, String>{};
 
     for (final entry in _stemCandidates.entries) {
       for (final filename in entry.value) {
-        final path = '$packageDir/$filename';
+        final path   = '$packageDir/$filename';
         final exists = isLocal
             ? File(path).existsSync()
             : await _assetExists(path);
         if (exists) {
           found[entry.key] = filename;
-          break; // found this stem type, try the next
+          break;
         }
       }
     }
+
+    if (found.isEmpty) {
+      debugPrint('[SongPackageLoader] ⚠ No OGG stems in $packageDir — '
+          'MIDI-only mode (synth will render full mix).');
+    }
+
     return AudioTrackSet(packageDir: packageDir, stems: found, isLocal: isLocal);
   }
 
-  /// Checks whether a Flutter asset exists without loading its full content.
   static Future<bool> _assetExists(String assetPath) async {
     try {
       await rootBundle.load(assetPath);
@@ -289,76 +215,53 @@ class SongPackageLoader {
     }
   }
 
-  /// Build the [Song] entity from package metadata.
+  // ── Song entity builder ───────────────────────────────────────────────────
+
   static Song _buildSong(
-    SongIni ini,
-    MidiParseResult midiResult,
-    SongSyncProfile syncProfile,
-    String packageAssetDir,
-    AudioTrackSet audio,
+    SongIni?         ini,
+    MidiParseResult  midiResult,
+    SongSyncProfile  syncProfile,
+    String           packageDir,
+    AudioTrackSet    audio,
   ) {
-    final id        = _songIdFromDir(packageAssetDir);
-    final bpm       = syncProfile.bpm.round();
-    final durMs     = syncProfile.songLengthSeconds > 0
+    final id    = _songIdFromDir(packageDir);
+    final bpm   = syncProfile.bpm.round();
+    final durMs = syncProfile.songLengthSeconds > 0
         ? (syncProfile.songLengthSeconds * 1000).round()
         : midiResult.totalDuration.inMilliseconds;
-    final difficulty = _mapDifficulty(ini.diffDrums);
-    final genre      = _mapGenre(ini.genre);
 
     return Song(
-      id:             id,
-      title:          ini.name,
-      artist:         ini.artist,
-      difficulty:     difficulty,
-      genre:          genre,
-      bpm:            bpm,
-      duration:       Duration(milliseconds: durMs),
-      midiAssetPath:  '$packageAssetDir/notes.mid',
-      isUnlocked:     true,
-      xpReward:       _calcXpReward(ini),
-      description:    ini.album.isNotEmpty ? '${ini.album}${ini.year.isNotEmpty ? " (${ini.year})" : ""}' : null,
-      techniqueTag:   ini.isProDrums ? 'Pro Drums' : 'Standard',
-      genreLabel:     ini.genre,
-      timeSignature:  '${midiResult.timeSignature.numerator}/${midiResult.timeSignature.denominator}',
-      beatsPerBar:    syncProfile.beatsPerBar,
-      packageAssetDir: packageAssetDir,
+      id:              id,
+      title:           ini?.name   ?? _titleFromId(id),
+      artist:          ini?.artist ?? 'Unknown Artist',
+      difficulty:      _mapDifficulty(ini?.diffDrums ?? -1),
+      genre:           _mapGenre(ini?.genre ?? ''),
+      bpm:             bpm,
+      duration:        Duration(milliseconds: durMs),
+      midiAssetPath:   '$packageDir/notes.mid',
+      isUnlocked:      true,
+      xpReward:        _calcXpReward(ini),
+      description:     ini != null && ini.album.isNotEmpty
+                         ? '${ini.album}${ini.year.isNotEmpty ? " (${ini.year})" : ""}'
+                         : null,
+      techniqueTag:    'Standard',
+      genreLabel:      ini?.genre ?? '',
+      timeSignature:   '${midiResult.timeSignature.numerator}/${midiResult.timeSignature.denominator}',
+      beatsPerBar:     syncProfile.beatsPerBar,
+      packageAssetDir: packageDir,
     );
   }
 
-  // ── Deduplication ────────────────────────────────────────────────────────────
+  // ── Utilities ──────────────────────────────────────────────────────────────
 
-  /// Remove duplicate NoteEvents that occur at the same tick.
-  ///
-  /// In Clone Hero pro drums, base notes (97-100) and cymbal markers (110-112)
-  /// both fire at the same tick and map to the same (or very similar) DrumPad.
-  /// We keep only the first event per pad per tick (within ±1ms tolerance).
-  static List<NoteEvent> _deduplicateCoincidentNotes(List<NoteEvent> notes) {
-    const kWindowMs = 2.0; // notes within 2ms are "simultaneous"
-    final result    = <NoteEvent>[];
-
-    for (final note in notes) {
-      final isRedundant = result.any((existing) =>
-          existing.pad == note.pad &&
-          (existing.timeSeconds - note.timeSeconds).abs() * 1000 < kWindowMs);
-      if (!isRedundant) result.add(note);
-    }
-
-    result.sort((a, b) => a.timeSeconds.compareTo(b.timeSeconds));
-    return result;
+  static int _beatsPerBar(int num, int den) {
+    if (den == 8 && num % 3 == 0) return num ~/ 3;
+    return num;
   }
 
-  // ── Mapping utilities ─────────────────────────────────────────────────────
-
-  static int _beatsPerBar(int numerator, int denominator) {
-    // For compound time signatures (6/8, 12/8, 9/8), primary beats are groups
-    if (denominator == 8 && numerator % 3 == 0) return numerator ~/ 3;
-    return numerator; // simple: beats per bar = numerator
-  }
-
-  static int _subdivisions(int numerator, int denominator) {
-    // Compound time: 3 eighth notes per beat (dotted quarter)
-    if (denominator == 8 && numerator % 3 == 0) return 3;
-    return 2; // simple: 2 eighth notes per quarter beat
+  static int _subdivisions(int num, int den) {
+    if (den == 8 && num % 3 == 0) return 3;
+    return 2;
   }
 
   static Difficulty _mapDifficulty(int stars) {
@@ -376,20 +279,30 @@ class SongPackageLoader {
     if (g.contains('pop'))                          return Genre.pop;
     if (g.contains('latin'))                        return Genre.latin;
     if (g.contains('electronic'))                   return Genre.electronic;
-    if (g.contains('gospel') || g.contains('worship') || g.contains('christian')) return Genre.cristiana;
+    if (g.contains('gospel') || g.contains('worship') || g.contains('christian'))
+      return Genre.cristiana;
     return Genre.rock;
   }
 
-  static int _calcXpReward(SongIni ini) {
-    // Base 100 XP, scaled by difficulty and pro drums
-    final base = 100 + ((ini.diffDrums.clamp(0, 6)) * 25);
-    return ini.isProDrums ? (base * 1.5).round() : base;
+  static int _calcXpReward(SongIni? ini) {
+    if (ini == null) return 100;
+    final base = 100 + (ini.diffDrums.clamp(0, 6) * 25);
+    return base;
   }
 
-  static String _songIdFromDir(String packageAssetDir) {
-    // 'assets/songs/aun_coda' → 'aun_coda'
-    final parts = packageAssetDir.split('/');
-    return parts.isNotEmpty ? parts.last : packageAssetDir;
+  static String _songIdFromDir(String packageDir) {
+    final parts = packageDir.split('/');
+    return parts.isNotEmpty ? parts.last : packageDir;
+  }
+
+  /// Converts a snake_case or kebab-case id to a human-readable title.
+  /// e.g. 'aun_coda' → 'Aun Coda'
+  static String _titleFromId(String id) {
+    return id
+        .replaceAll(RegExp(r'[_-]'), ' ')
+        .split(' ')
+        .map((w) => w.isEmpty ? '' : '${w[0].toUpperCase()}${w.substring(1)}')
+        .join(' ');
   }
 }
 

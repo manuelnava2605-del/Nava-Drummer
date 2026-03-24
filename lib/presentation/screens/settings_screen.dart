@@ -12,6 +12,7 @@ import '../../core/locale_controller.dart';
 import '../../core/notification_service.dart';
 import '../../data/datasources/local/midi_engine.dart';
 import '../../domain/entities/entities.dart';
+import '../../l10n/strings.dart';
 
 class SettingsScreen extends StatefulWidget {
   final MidiEngine midiEngine;
@@ -74,19 +75,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (_) => AlertDialog(
         backgroundColor: NavaTheme.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Cerrar sesión', style: TextStyle(
+        title: Text(S.of(context).settingsLogoutConfirm, style: const TextStyle(
           fontFamily: 'DrummerDisplay', fontSize: 16, color: NavaTheme.textPrimary)),
-        content: const Text('¿Seguro que quieres cerrar sesión?', style: TextStyle(
+        content: Text(S.of(context).settingsLogoutMsg, style: const TextStyle(
           fontFamily: 'DrummerBody', fontSize: 13, color: NavaTheme.textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar', style: TextStyle(
+            child: Text(S.of(context).settingsCancel, style: const TextStyle(
               color: NavaTheme.textMuted, fontFamily: 'DrummerBody')),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Salir', style: TextStyle(
+            child: Text(S.of(context).settingsConfirm, style: const TextStyle(
               color: NavaTheme.neonMagenta, fontFamily: 'DrummerBody',
               fontWeight: FontWeight.bold)),
           ),
@@ -117,27 +118,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _buildUserCard(),
                 const SizedBox(height: 20),
 
-                _buildSection('CUENTA', [
+                _buildSection(S.of(context).settingsAccount, [
                   _buildToggle(
-                    label:    'Recordar sesión',
+                    label:    S.of(context).settingsRememberMe,
                     value:    _rememberMe,
                     onChanged: _saveRememberMe,
                     icon:     Icons.lock_open_outlined,
-                    subtitle: 'No pedir inicio de sesión al abrir la app',
+                    subtitle: S.of(context).settingsRememberMeSub,
                   ),
                 ]),
                 const SizedBox(height: 16),
 
-                _buildSection('IDIOMA', [
-                  _buildLanguagePicker(),
+                _buildSection(S.of(context).settingsLanguageSection, [
+                  _buildLanguagePicker(context),
                 ]),
                 const SizedBox(height: 16),
 
-                _buildSection('DISPOSITIVO', [
+                _buildSection(S.of(context).settingsDeviceSection, [
                   _buildNavItem(
-                    icon:  Icons.settings_input_component_outlined,
-                    label: 'Configurar batería MIDI',
-                    subtitle: 'Mapping de pads y canal MIDI',
+                    icon:    Icons.settings_input_component_outlined,
+                    label:   S.of(context).settingsDevice,
+                    subtitle: S.of(context).settingsDeviceSub,
                     onTap: () => Navigator.push(context, MaterialPageRoute(
                       builder: (_) => DeviceSetupScreen(
                         midiEngine:      widget.midiEngine,
@@ -147,8 +148,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   _buildNavItem(
                     icon:    Icons.tune_outlined,
-                    label:   'Calibración de latencia',
-                    subtitle: 'Ajusta el offset de audio/MIDI',
+                    label:   S.of(context).settingsCalibration,
+                    subtitle: S.of(context).settingsCalibSub,
                     onTap: () => Navigator.push(context, MaterialPageRoute(
                       builder: (_) => const LatencyCalibrationScreen(),
                     )),
@@ -156,31 +157,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ]),
                 const SizedBox(height: 16),
 
-                _buildSection('NOTIFICACIONES', [
+                _buildSection(S.of(context).settingsNotifSection, [
                   _buildToggle(
-                    label:    'Recordatorios de práctica',
+                    label:    S.of(context).settingsNotifLabel,
                     value:    _notifications,
                     onChanged: _saveNotifications,
                     icon:     Icons.notifications_outlined,
-                    subtitle: 'Notificación diaria para practicar',
+                    subtitle: S.of(context).settingsNotifSub,
                   ),
                 ]),
                 const SizedBox(height: 16),
 
-                _buildSection('ACERCA DE', [
+                _buildSection(S.of(context).settingsAbout, [
                   _buildNavItem(
                     icon:  Icons.shield_outlined,
-                    label: 'Política de privacidad',
+                    label: S.of(context).settingsPrivacy,
                     onTap: () {},
                   ),
                   _buildNavItem(
                     icon:  Icons.article_outlined,
-                    label: 'Términos de uso',
+                    label: S.of(context).settingsTerms,
                     onTap: () {},
                   ),
                   _buildInfoItem(
                     icon:  Icons.info_outline,
-                    label: 'Versión',
+                    label: S.of(context).settingsVersion,
                     value: '1.0.0',
                   ),
                 ]),
@@ -201,7 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
       child: Row(children: [
-        const Text('AJUSTES', style: TextStyle(
+        Text(S.of(context).settingsTitle.toUpperCase(), style: const TextStyle(
           fontFamily: 'DrummerDisplay', fontSize: 22,
           color: NavaTheme.textPrimary, fontWeight: FontWeight.bold,
           letterSpacing: 3,
@@ -215,10 +216,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildUserCard() {
     final user   = _user;
     final isAnon = user?.isAnonymous ?? true;
+    final s      = S.of(context);
     final name   = user?.displayName?.isNotEmpty == true
         ? user!.displayName!
-        : (isAnon ? 'Invitado' : 'Drummer');
-    final email  = isAnon ? 'Modo invitado' : (user?.email ?? '');
+        : (isAnon ? s.settingsGuest : 'Drummer');
+    final email  = isAnon ? s.settingsGuestMode : (user?.email ?? '');
     final avatar = name.isNotEmpty ? name[0].toUpperCase() : 'D';
 
     return Container(
@@ -226,9 +228,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       decoration: BoxDecoration(
         color: NavaTheme.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: NavaTheme.neonCyan.withOpacity(0.2)),
+        border: Border.all(color: NavaTheme.neonCyan.withValues(alpha: 0.2)),
         boxShadow: [BoxShadow(
-          color: NavaTheme.neonCyan.withOpacity(0.05), blurRadius: 20)],
+          color: NavaTheme.neonCyan.withValues(alpha: 0.05), blurRadius: 20)],
       ),
       child: Row(children: [
         Container(
@@ -258,8 +260,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
                 color: isAnon
-                    ? NavaTheme.textMuted.withOpacity(0.1)
-                    : NavaTheme.neonCyan.withOpacity(0.1),
+                    ? NavaTheme.textMuted.withValues(alpha: 0.1)
+                    : NavaTheme.neonCyan.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Text(
@@ -295,14 +297,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           decoration: BoxDecoration(
             color: NavaTheme.surface,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: NavaTheme.neonCyan.withOpacity(0.1)),
+            border: Border.all(color: NavaTheme.neonCyan.withValues(alpha: 0.1)),
           ),
           child: Column(children: [
             for (int i = 0; i < items.length; i++) ...[
               items[i],
               if (i < items.length - 1)
                 Divider(height: 1,
-                    color: NavaTheme.neonCyan.withOpacity(0.07),
+                    color: NavaTheme.neonCyan.withValues(alpha: 0.07),
                     indent: 16, endIndent: 16),
             ],
           ]),
@@ -344,13 +346,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // ── Language Picker ───────────────────────────────────────────────────────
 
-  Widget _buildLanguagePicker() {
+  Widget _buildLanguagePicker(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(children: [
         const Icon(Icons.language, color: NavaTheme.textMuted, size: 18),
         const SizedBox(width: 12),
-        const Expanded(child: Text('Idioma de la app', style: TextStyle(
+        Expanded(child: Text(S.of(context).settingsLanguage, style: const TextStyle(
           fontFamily: 'DrummerBody', fontSize: 13,
           color: NavaTheme.textPrimary))),
         _LangButton(label: 'ES', selected: _language == 'es',
@@ -427,14 +429,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         width: double.infinity,
         height: 52,
         decoration: BoxDecoration(
-          color: NavaTheme.neonMagenta.withOpacity(0.08),
+          color: NavaTheme.neonMagenta.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: NavaTheme.neonMagenta.withOpacity(0.4)),
+          border: Border.all(color: NavaTheme.neonMagenta.withValues(alpha: 0.4)),
         ),
         child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           const Icon(Icons.logout, color: NavaTheme.neonMagenta, size: 18),
           const SizedBox(width: 8),
-          const Text('CERRAR SESIÓN', style: TextStyle(
+          Text(S.of(context).settingsLogout.toUpperCase(), style: const TextStyle(
             fontFamily: 'DrummerBody', fontSize: 13,
             color: NavaTheme.neonMagenta, fontWeight: FontWeight.bold,
             letterSpacing: 2,
@@ -460,13 +462,13 @@ class _LangButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
       decoration: BoxDecoration(
         color: selected
-            ? NavaTheme.neonCyan.withOpacity(0.15)
+            ? NavaTheme.neonCyan.withValues(alpha: 0.15)
             : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: selected
               ? NavaTheme.neonCyan
-              : NavaTheme.textMuted.withOpacity(0.2)),
+              : NavaTheme.textMuted.withValues(alpha: 0.2)),
       ),
       child: Text(label, style: TextStyle(
         fontFamily: 'DrummerBody', fontSize: 11, letterSpacing: 1,

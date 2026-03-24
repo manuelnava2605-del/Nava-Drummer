@@ -229,6 +229,11 @@ class SongModel {
   final String? techniqueTag;
   final String? description;
   final int     order;
+  /// Increment this in Firestore whenever the Storage files change.
+  /// The app compares it against the locally-cached version and re-downloads
+  /// if the remote value is higher.  Defaults to 1 so legacy docs are treated
+  /// as "version 1" and are never wrongly re-downloaded on first launch.
+  final int     version;
 
   const SongModel({
     required this.id,
@@ -245,7 +250,8 @@ class SongModel {
     required this.requiredLevel,
     this.techniqueTag,
     this.description,
-    this.order = 0,
+    this.order   = 0,
+    this.version = 1,
   });
 
   factory SongModel.fromDoc(DocumentSnapshot doc) {
@@ -266,6 +272,7 @@ class SongModel {
       techniqueTag:       d['techniqueTag']         as String?,
       description:        d['description']          as String?,
       order:              (d['order']              as num?)?.toInt() ?? 0,
+      version:            (d['version']            as num?)?.toInt() ?? 1,
     );
   }
 
@@ -284,6 +291,7 @@ class SongModel {
     'techniqueTag':      techniqueTag,
     'description':       description,
     'order':             order,
+    'version':           version,
   };
 
   /// Convert to domain [Song] entity.

@@ -105,7 +105,10 @@ class UserRepositoryImpl implements UserRepository {
 
   @override
   Future<UserProgress> addXp(String userId, int xpAmount) async {
-    final progRef = _progress.doc(userId);
+    final progRef  = _progress.doc(userId);
+    final userSnap = await _users.doc(userId).get();
+    final displayName = (userSnap.data() as Map<String, dynamic>?)?['displayName']
+        as String? ?? 'Drummer';
 
     return _db.runTransaction((tx) async {
       final snap = await tx.get(progRef);
@@ -131,7 +134,7 @@ class UserRepositoryImpl implements UserRepository {
         lastPracticeDate: current.lastPracticeDate,
       );
       tx.set(progRef, updated.toMap(), SetOptions(merge: true));
-      return updated.toDomain('');
+      return updated.toDomain(displayName);
     });
   }
 
@@ -302,7 +305,7 @@ class SongRepositoryImpl implements SongRepository {
   final FirebaseFirestore _db      = FirebaseFirestore.instance;
   final FirebaseStorage   _storage = FirebaseStorage.instance;
 
-  CollectionReference get _songs => _db.collection('songs');
+  CollectionReference get _songs => _db.collection('Songs');
 
   @override
   Future<List<Song>> getAllSongs() async {
@@ -344,85 +347,13 @@ class SongRepositoryImpl implements SongRepository {
     return File('${dir.path}/midi_cache/$songId.mid');
   }
 
-  Song _songFromModel(DocumentSnapshot doc) {
-    final m = SongModel.fromDoc(doc);
-    return Song(
-      id:           m.id,
-      title:        m.title,
-      artist:       m.artist,
-      difficulty:   _parseDifficulty(m.difficulty),
-      genre:        _parseGenre(m.genre),
-      bpm:          m.bpm,
-      duration:     Duration(seconds: m.durationSeconds),
-      midiAssetPath: 'assets/midi/${m.id}.mid',
-      isUnlocked:   !m.isPremium,
-      xpReward:     m.xpReward,
-    );
-  }
+  /// Converts a Firestore [DocumentSnapshot] to a [Song] domain entity.
+  /// Uses [SongModel.toDomain()] which correctly handles [storageFolderPath]
+  /// → [Song.packageAssetDir] so the practice screen can download the package.
+  Song _songFromModel(DocumentSnapshot doc) => SongModel.fromDoc(doc).toDomain();
 
-  Difficulty _parseDifficulty(String s) {
-    switch (s.toLowerCase()) {
-      case 'intermediate': return Difficulty.intermediate;
-      case 'advanced':     return Difficulty.advanced;
-      case 'expert':       return Difficulty.expert;
-      default:             return Difficulty.beginner;
-    }
-  }
-
-  Genre _parseGenre(String s) {
-    switch (s.toLowerCase()) {
-      case 'funk':        return Genre.funk;
-      case 'jazz':        return Genre.jazz;
-      case 'metal':       return Genre.metal;
-      case 'electronic':  return Genre.electronic;
-      case 'latin':       return Genre.latin;
-      default:            return Genre.rock;
-    }
-  }
-
-  // Local sample songs (used when Firestore is unavailable / first launch)
-  List<Song> _localSampleSongs() => [
-    const Song(
-      id: 'quarter_notes', title: 'Quarter Notes', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.beginner, genre: Genre.rock,
-      bpm: 80, duration: Duration(seconds: 60),
-      midiAssetPath: 'assets/midi/quarter_notes.mid',
-      isUnlocked: true, xpReward: 50,
-    ),
-    const Song(
-      id: 'basic_rock_i', title: 'Basic Rock Beat I', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.beginner, genre: Genre.rock,
-      bpm: 90, duration: Duration(seconds: 90),
-      midiAssetPath: 'assets/midi/basic_rock_i.mid',
-      isUnlocked: true, xpReward: 100,
-    ),
-    const Song(
-      id: 'funk_groove', title: 'Funk Groove', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.intermediate, genre: Genre.funk,
-      bpm: 100, duration: Duration(seconds: 120),
-      midiAssetPath: 'assets/midi/funk_groove.mid',
-      isUnlocked: true, xpReward: 200,
-    ),
-    const Song(
-      id: 'jazz_ride', title: 'Jazz Ride Pattern', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.intermediate, genre: Genre.jazz,
-      bpm: 120, duration: Duration(seconds: 120),
-      midiAssetPath: 'assets/midi/jazz_ride.mid',
-      isUnlocked: false, xpReward: 250,
-    ),
-    const Song(
-      id: 'metal_double', title: 'Metal Double Bass', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.advanced, genre: Genre.metal,
-      bpm: 150, duration: Duration(seconds: 180),
-      midiAssetPath: 'assets/midi/metal_double.mid',
-      isUnlocked: false, xpReward: 400,
-    ),
-    const Song(
-      id: 'polyrhythm_7_4', title: 'Polyrhythm 7/4', artist: 'NavaDrummer Tutorials',
-      difficulty: Difficulty.expert, genre: Genre.rock,
-      bpm: 100, duration: Duration(seconds: 180),
-      midiAssetPath: 'assets/midi/polyrhythm_7_4.mid',
-      isUnlocked: false, xpReward: 600,
-    ),
-  ];
+  /// Empty fallback — shown when Firestore is unavailable (no network).
+  /// Songs come exclusively from Firebase Storage/Firestore; no local MIDI
+  /// assets are bundled in the app binary anymore.
+  List<Song> _localSampleSongs() => const [];
 }

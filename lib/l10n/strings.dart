@@ -64,23 +64,49 @@ class S {
 
   // ── Settings ──────────────────────────────────────────────────────────────
 
-  String get settingsTitle        => _isEn ? 'Settings'           : 'Ajustes';
-  String get settingsAccount      => _isEn ? 'ACCOUNT'            : 'CUENTA';
-  String get settingsPreferences  => _isEn ? 'PREFERENCES'        : 'PREFERENCIAS';
-  String get settingsLanguage     => _isEn ? 'Language'           : 'Idioma';
-  String get settingsRememberMe   => _isEn ? 'Remember session'   : 'Recordar sesión';
-  String get settingsNotifications=> _isEn ? 'Push notifications' : 'Notificaciones';
-  String get settingsDevice       => _isEn ? 'MIDI device'        : 'Dispositivo MIDI';
-  String get settingsCalibration  => _isEn ? 'Latency calibration': 'Calibración de latencia';
-  String get settingsLogout       => _isEn ? 'Log out'            : 'Cerrar sesión';
-  String get settingsLogoutConfirm=> _isEn ? 'Log out?'           : 'Cerrar sesión';
-  String get settingsLogoutMsg    => _isEn ? 'Are you sure you want to log out?'
-                                           : '¿Seguro que quieres cerrar sesión?';
-  String get settingsCancel       => _isEn ? 'Cancel'  : 'Cancelar';
-  String get settingsConfirm      => _isEn ? 'Log out' : 'Salir';
-  String get settingsVersion      => _isEn ? 'Version' : 'Versión';
-  String get settingsPrivacy      => _isEn ? 'Privacy policy' : 'Política de privacidad';
-  String get settingsTerms        => _isEn ? 'Terms of service' : 'Términos de uso';
+  String get settingsTitle           => _isEn ? 'Settings'              : 'Ajustes';
+  String get settingsAccount         => _isEn ? 'ACCOUNT'               : 'CUENTA';
+  String get settingsPreferences     => _isEn ? 'PREFERENCES'           : 'PREFERENCIAS';
+  String get settingsLanguageSection => _isEn ? 'LANGUAGE'              : 'IDIOMA';
+  String get settingsLanguage        => _isEn ? 'Language'              : 'Idioma de la app';
+  String get settingsRememberMe      => _isEn ? 'Remember session'      : 'Recordar sesión';
+  String get settingsRememberMeSub   => _isEn ? 'Stay logged in on app open'
+                                              : 'No pedir inicio de sesión al abrir la app';
+  String get settingsDeviceSection   => _isEn ? 'DEVICE'                : 'DISPOSITIVO';
+  String get settingsNotifications   => _isEn ? 'Push notifications'    : 'Notificaciones';
+  String get settingsNotifSection    => _isEn ? 'NOTIFICATIONS'         : 'NOTIFICACIONES';
+  String get settingsNotifLabel      => _isEn ? 'Practice reminders'    : 'Recordatorios de práctica';
+  String get settingsNotifSub        => _isEn ? 'Daily notification to keep practicing'
+                                              : 'Notificación diaria para practicar';
+  String get settingsDevice          => _isEn ? 'Configure MIDI kit'    : 'Configurar batería MIDI';
+  String get settingsDeviceSub       => _isEn ? 'Pad mapping and MIDI channel'
+                                              : 'Mapping de pads y canal MIDI';
+  String get settingsCalibration     => _isEn ? 'Latency calibration'   : 'Calibración de latencia';
+  String get settingsCalibSub        => _isEn ? 'Adjust audio/MIDI offset'
+                                              : 'Ajusta el offset de audio/MIDI';
+  String get settingsAbout           => _isEn ? 'ABOUT'                 : 'ACERCA DE';
+  String get settingsLogout          => _isEn ? 'Log out'               : 'Cerrar sesión';
+  String get settingsLogoutConfirm   => _isEn ? 'Log out?'              : 'Cerrar sesión';
+  String get settingsLogoutMsg       => _isEn ? 'Are you sure you want to log out?'
+                                              : '¿Seguro que quieres cerrar sesión?';
+  String get settingsCancel          => _isEn ? 'Cancel'                : 'Cancelar';
+  String get settingsConfirm         => _isEn ? 'Log out'               : 'Salir';
+  String get settingsVersion         => _isEn ? 'Version'               : 'Versión';
+  String get settingsPrivacy         => _isEn ? 'Privacy policy'        : 'Política de privacidad';
+  String get settingsTerms           => _isEn ? 'Terms of service'      : 'Términos de uso';
+  String get settingsGuest           => _isEn ? 'Guest'                 : 'Invitado';
+  String get settingsGuestMode       => _isEn ? 'Guest mode'            : 'Modo invitado';
+
+  // ── Device setup ──────────────────────────────────────────────────────────
+
+  String get deviceTitle       => _isEn ? 'CONNECT KIT'            : 'CONECTAR KIT';
+  String get deviceSubtitle    => _isEn ? 'Select your electronic drum kit'
+                                        : 'Selecciona tu batería electrónica';
+  String get deviceConfigPads  => _isEn ? 'CONFIGURE PADS →'       : 'CONFIGURAR PADS →';
+  String get deviceSkip        => _isEn ? 'Skip — No MIDI kit'      : 'Omitir — Sin kit MIDI';
+  String get deviceBtPermTitle => _isEn ? 'Bluetooth required'      : 'Se requiere Bluetooth';
+  String get deviceBtPermMsg   => _isEn ? 'Grant Bluetooth permission to scan for MIDI devices.'
+                                        : 'Otorga permiso de Bluetooth para buscar dispositivos MIDI.';
 
   // ── Song library ──────────────────────────────────────────────────────────
 

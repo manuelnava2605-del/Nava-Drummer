@@ -104,13 +104,23 @@ class RemoteSongRepository {
       // Ordenar por campo 'order'; documentos sin el campo tienen order=0
       models.sort((a, b) => a.order.compareTo(b.order));
 
-      // Convertir a dominio, resolviendo la ruta local si ya está en caché
+      // Convertir a dominio, resolviendo la ruta local si ya está en caché.
+      // Si el campo `version` en Firestore es mayor que la versión cacheada,
+      // se borra el cache local y se fuerza una re-descarga.
       final songs = <Song>[];
       for (final model in models) {
         String? localPath;
-        if (model.storageFolderPath.isNotEmpty &&
-            await cache.isDownloaded(model.id)) {
-          localPath = await cache.localDir(model.id);
+        if (model.storageFolderPath.isNotEmpty) {
+          final cachedVer = await cache.cachedVersion(model.id);
+          if (cachedVer > 0 && model.version > cachedVer) {
+            // Remote has a newer version — invalidate local cache so the
+            // download screen re-fetches all files (including new OGG stems).
+            debugPrint('[RemoteSongRepository] Version bump for ${model.id}: '
+                'cached=$cachedVer remote=${model.version} → clearing cache');
+            await cache.clearSong(model.id);
+          } else if (await cache.isDownloaded(model.id)) {
+            localPath = await cache.localDir(model.id);
+          }
         }
         songs.add(model.toDomain(localCachePath: localPath));
       }
@@ -139,6 +149,8 @@ class RemoteSongRepository {
     void Function(double progress)? onProgress,
   }) async {
     debugPrint('[RemoteSongRepository] Downloading $songId from $storageFolderPath → $localDir');
+    // Ensure we have a valid auth token so Storage security rules pass.
+    await _ensureAuth();
 
     // Ensure the local directory exists before writing any file
     await Directory(localDir).create(recursive: true);
@@ -193,7 +205,6 @@ class RemoteSongRepository {
 
   /// Garantiza que existe un usuario autenticado (anónimo si es necesario)
   /// para que Firebase Storage pueda adjuntar un token válido a las descargas.
-  // ignore: unused_element
   Future<void> _ensureAuth() async {
     try {
       final user = FirebaseAuth.instance.currentUser;

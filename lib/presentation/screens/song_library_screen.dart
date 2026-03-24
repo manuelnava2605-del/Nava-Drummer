@@ -355,7 +355,7 @@ class _SongLibraryScreenState extends State<SongLibraryScreen> {
           decoration: BoxDecoration(
             color: _currentIndex == i
                 ? NavaTheme.neonCyan
-                : NavaTheme.textMuted.withOpacity(0.3),
+                : NavaTheme.textMuted.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(3),
           ),
         )),
@@ -474,13 +474,13 @@ class _SongCarouselCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
               color: _isLocked
-                  ? NavaTheme.textMuted.withOpacity(0.12)
-                  : _diffColor.withOpacity(0.35),
+                  ? NavaTheme.textMuted.withValues(alpha: 0.12)
+                  : _diffColor.withValues(alpha: 0.35),
               width: 1.5,
             ),
             boxShadow: [
               BoxShadow(
-                color: _diffColor.withOpacity(0.08),
+                color: _diffColor.withValues(alpha: 0.08),
                 blurRadius: 24, spreadRadius: 2,
               ),
             ],
@@ -511,8 +511,8 @@ class _SongCarouselCard extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                _diffColor.withOpacity(0.25),
-                NavaTheme.background.withOpacity(0.6),
+                _diffColor.withValues(alpha: 0.25),
+                NavaTheme.background.withValues(alpha: 0.6),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -526,7 +526,7 @@ class _SongCarouselCard extends StatelessWidget {
         Center(child: Icon(
           Icons.album_outlined,
           size: 72,
-          color: _diffColor.withOpacity(0.18),
+          color: _diffColor.withValues(alpha: 0.18),
         )),
         // Genre badge
         Positioned(
@@ -543,9 +543,9 @@ class _SongCarouselCard extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
-                color: NavaTheme.neonGold.withOpacity(0.15),
+                color: NavaTheme.neonGold.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: NavaTheme.neonGold.withOpacity(0.5)),
+                border: Border.all(color: NavaTheme.neonGold.withValues(alpha: 0.5)),
               ),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.workspace_premium,
@@ -561,7 +561,7 @@ class _SongCarouselCard extends StatelessWidget {
         // Lock overlay
         if (_isLocked)
           Container(
-            color: NavaTheme.background.withOpacity(0.5),
+            color: NavaTheme.background.withValues(alpha: 0.5),
             child: Center(child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -581,7 +581,7 @@ class _SongCarouselCard extends StatelessWidget {
 
   Widget _buildInfoArea() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -600,7 +600,7 @@ class _SongCarouselCard extends StatelessWidget {
             style: const TextStyle(
               fontFamily: 'DrummerBody', fontSize: 13,
               color: NavaTheme.textSecondary)),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           // Stats row
           Row(children: [
             _StatPill(Icons.speed, '${song.bpm} BPM'),
@@ -610,7 +610,7 @@ class _SongCarouselCard extends StatelessWidget {
             _StatPill(Icons.star_outline, '+${song.xpReward} XP',
                 color: NavaTheme.neonGold),
           ]),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           // Tags
           Wrap(spacing: 6, runSpacing: 4, children: [
             _Tag(song.difficulty.name.toUpperCase(), _diffColor),
@@ -623,9 +623,9 @@ class _SongCarouselCard extends StatelessWidget {
             Text(song.description!,
               style: const TextStyle(
                 fontFamily: 'DrummerBody', fontSize: 10,
-                color: NavaTheme.textMuted, height: 1.5),
+                color: NavaTheme.textMuted, height: 1.4),
               maxLines: 2, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
           ],
           // Action button
           _buildActionButton(),
@@ -652,7 +652,7 @@ class _SongCarouselCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(4),
           child: LinearProgressIndicator(
             value: downloadProgress,
-            backgroundColor: NavaTheme.neonCyan.withOpacity(0.12),
+            backgroundColor: NavaTheme.neonCyan.withValues(alpha: 0.12),
             color: NavaTheme.neonCyan,
             minHeight: 6,
           ),
@@ -667,9 +667,9 @@ class _SongCarouselCard extends StatelessWidget {
         child: Container(
           width: double.infinity, height: 48,
           decoration: BoxDecoration(
-            border: Border.all(color: NavaTheme.neonCyan.withOpacity(0.5)),
+            border: Border.all(color: NavaTheme.neonCyan.withValues(alpha: 0.5)),
             borderRadius: BorderRadius.circular(12),
-            color: NavaTheme.neonCyan.withOpacity(0.08),
+            color: NavaTheme.neonCyan.withValues(alpha: 0.08),
           ),
           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             const Icon(Icons.cloud_download_outlined,
@@ -690,8 +690,8 @@ class _SongCarouselCard extends StatelessWidget {
         width: double.infinity, height: 48,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
-          color: NavaTheme.textMuted.withOpacity(0.08),
-          border: Border.all(color: NavaTheme.textMuted.withOpacity(0.2)),
+          color: NavaTheme.textMuted.withValues(alpha: 0.08),
+          border: Border.all(color: NavaTheme.textMuted.withValues(alpha: 0.2)),
         ),
         child: Center(child: Text('NIVEL $_levelReq REQUERIDO',
           style: const TextStyle(
@@ -708,11 +708,11 @@ class _SongCarouselCard extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: LinearGradient(colors: [
             _diffColor,
-            _diffColor.withOpacity(0.75),
+            _diffColor.withValues(alpha: 0.75),
           ]),
           borderRadius: BorderRadius.circular(14),
           boxShadow: [BoxShadow(
-            color: _diffColor.withOpacity(0.35),
+            color: _diffColor.withValues(alpha: 0.35),
             blurRadius: 14, offset: const Offset(0, 4),
           )],
         ),
@@ -770,9 +770,9 @@ class _Badge extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
     decoration: BoxDecoration(
-      color: color.withOpacity(0.18),
+      color: color.withValues(alpha: 0.18),
       borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: color.withOpacity(0.5)),
+      border: Border.all(color: color.withValues(alpha: 0.5)),
     ),
     child: Text(label, style: TextStyle(
       fontFamily: 'DrummerBody', fontSize: 9, letterSpacing: 1,
@@ -805,7 +805,7 @@ class _Tag extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
     decoration: BoxDecoration(
-      color: color.withOpacity(0.12),
+      color: color.withValues(alpha: 0.12),
       borderRadius: BorderRadius.circular(4),
     ),
     child: Text(text, style: TextStyle(
@@ -830,10 +830,10 @@ class _Chip extends StatelessWidget {
       margin: const EdgeInsets.only(right: 8),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: active ? color.withOpacity(0.15) : NavaTheme.surface,
+        color: active ? color.withValues(alpha: 0.15) : NavaTheme.surface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-            color: active ? color : NavaTheme.textMuted.withOpacity(0.2)),
+            color: active ? color : NavaTheme.textMuted.withValues(alpha: 0.2)),
       ),
       child: Text(label, style: TextStyle(
         fontFamily: 'DrummerBody', fontSize: 10, letterSpacing: 0.8,
@@ -885,8 +885,8 @@ class _SearchFieldState extends State<_SearchField> {
       borderRadius: BorderRadius.circular(10),
       border: Border.all(
         color: _expanded
-            ? NavaTheme.neonCyan.withOpacity(0.5)
-            : NavaTheme.neonCyan.withOpacity(0.15)),
+            ? NavaTheme.neonCyan.withValues(alpha: 0.5)
+            : NavaTheme.neonCyan.withValues(alpha: 0.15)),
     ),
     child: Row(children: [
       GestureDetector(

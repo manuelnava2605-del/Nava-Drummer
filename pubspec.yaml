@@ -38,6 +38,8 @@ dependencies:
   just_audio: ^0.9.36      # backing tracks (long-form streaming) — keep
   audio_session: ^0.1.18
   soundpool: ^2.3.1        # drum one-shots (low-latency game audio)
+  dart_melty_soundfont: ^2.0.0   # SF2 synthesizer — full MIDI playback
+  flutter_pcm_sound: ^3.3.3      # PCM output for synth audio
 
   # MIDI
   plugin_platform_interface: ^2.1.6
@@ -64,6 +66,9 @@ dependencies:
   # Notifications
   flutter_local_notifications: ^17.2.4
   timezone: ^0.9.4
+
+  # Permissions (runtime — BT scan, location, notifications)
+  permission_handler: ^11.3.1
 
   # Utils
   uuid: ^4.2.2
@@ -96,7 +101,6 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/midi/
     - assets/sounds/
     - assets/sounds/drums/kick/
     - assets/sounds/drums/snare/
@@ -118,6 +122,10 @@ flutter:
     # songs_manifest.json — fallback offline catalog
     # Real song packages viven en Firebase Storage (no bundleados)
     - assets/songs/
+    # SF2 soundfont for full MIDI playback (bundle locally to avoid Firebase Storage dependency)
+    # Place TimGM6mb.sf2 at assets/soundfonts/TimGM6mb.sf2
+    # Download: https://musescore.org/sites/musescore.org/files/2022-02/TimGM6mb.sf2
+    - assets/soundfonts/
 
   fonts:
     - family: DrummerDisplay

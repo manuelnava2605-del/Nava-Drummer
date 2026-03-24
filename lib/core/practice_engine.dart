@@ -31,6 +31,9 @@ class ScoreState {
   /// Source of the most-recent hit (for HUD input-source indicator).
   final InputSourceType lastInputSource;
 
+  /// Combo tier: 0=×1, 1=×2, 2=×4, 3=×8. Used to trigger milestone animations.
+  final int comboTier;
+
   const ScoreState({
     required this.score,
     required this.accuracy,
@@ -44,6 +47,7 @@ class ScoreState {
     required this.missCount,
     this.gaussianScore = 0,
     this.lastInputSource = InputSourceType.connectedDrum,
+    this.comboTier = 0,
   });
 
   factory ScoreState.initial() => const ScoreState(
@@ -57,6 +61,7 @@ class ScoreState {
         earlyCount: 0,
         lateCount: 0,
         missCount: 0,
+        comboTier: 0,
       );
 
   String get accuracyString => '${(accuracy * 100).toStringAsFixed(1)}%';
@@ -158,6 +163,23 @@ class PracticeEngine {
 
   PracticeEngine({required MidiEngine midiEngine}) : _midi = midiEngine;
 
+  // ── Device mapping (survives song reloads) ─────────────────────────────────
+  DrumMapping? _deviceMapping;
+
+  /// Called once after the user completes device setup.
+  /// Merges the physical kit's note map into every subsequent song load so
+  /// non-GM kits resolve correctly.
+  void setDeviceMapping(DrumMapping mapping) {
+    _deviceMapping = mapping;
+    // If a song is already loaded, rebuild the normalizer immediately.
+    if (_mapping != null) {
+      final merged = Map<int, DrumPad>.from(_mapping!.noteMap);
+      merged.addAll(mapping.noteMap); // device overrides song defaults
+      _normalizer = DrumNoteNormalizer(primaryMap: merged, brand: DrumKitBrand.generic);
+      debugPrint('[PracticeEngine] Device mapping applied: ${mapping.noteMap.length} entries');
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // LOAD
   // ══════════════════════════════════════════════════════════════════════════
@@ -185,10 +207,14 @@ class PracticeEngine {
     _matcher = ContextAwareMatcher(_timingEngine);
     _stabilizer = AdaptiveMidiStabilizer();
     // Use the active mapping's noteMap as the primary lookup so that
-    // Clone Hero (notes 95-100), Roland TD, and other non-GM kits resolve
+    // Roland TD, and other non-GM kits resolve
     // correctly. The DrumMappingBrand extension always returns .generic, so
     // brand-based lookup was a silent no-op — primaryMap fixes this properly.
-    _normalizer = DrumNoteNormalizer(primaryMap: _mapping?.noteMap, brand: DrumKitBrand.generic);
+    // Merge device mapping (physical kit) over the song mapping (GM/Roland TD/custom)
+    // so notes from non-standard kits still resolve to the correct DrumPad.
+    final mergedMap = Map<int, DrumPad>.from(mapping.noteMap);
+    if (_deviceMapping != null) mergedMap.addAll(_deviceMapping!.noteMap);
+    _normalizer = DrumNoteNormalizer(primaryMap: mergedMap, brand: DrumKitBrand.generic);
 
     // Apply swing to note timestamps if needed
     if (swingRatio > 0) {
@@ -234,18 +260,17 @@ class PracticeEngine {
     _setState(EngineState.ready);
   }
 
-  /// Load a fully-parsed [SongPackage] (Clone Hero / RBN format).
+  /// Load a fully-parsed [SongPackage] (MIDI-based GM format).
   ///
   /// This is the preferred entry point for package-based songs.
   /// It calls [loadSong] with the chart and a probe mapping, then:
   ///   1. Replaces the generic M4A backing track with the OGG stem from the package.
   ///   2. Overrides the sync profile with the one auto-derived by [SongPackageLoader].
   Future<void> loadSongPackage(SongPackage package) async {
+    // All packages use GM standard mapping — Clone Hero format is not supported.
     final mapping = DrumMapping(
-      deviceId: package.isCloneHeroFormat ? 'clone_hero' : 'gm',
-      noteMap: package.isCloneHeroFormat
-          ? StandardDrumMaps.cloneHeroExpert
-          : StandardDrumMaps.generalMidi,
+      deviceId: 'gm',
+      noteMap:  StandardDrumMaps.generalMidi,
     );
 
     await loadSong(package.song, package.chart, mapping);
@@ -627,21 +652,38 @@ class PracticeEngine {
   void _onMidi(MidiEvent raw) {
     if (_state != EngineState.playing) return;
 
-    // ── Step 1: Resolve pad via active mapping (GM / Clone Hero / Roland…)
+    // ── Step 1: Resolve pad via active mapping (GM / Roland TD / custom)
     final normalizedPad = _normalizer.normalize(midiNote: raw.note, channel: raw.channel);
     if (normalizedPad == null) return;
 
-    // ── Step 2: Ghost-note context using resolved pad
-    final expectsGhost = AdaptiveMidiStabilizer.nextNoteIsGhost(
-      normalizedPad,
-      _pending,
-      _playUs / 1000.0,
-      bpm: _bpm,
-    );
-
-    // ── Step 3: Stabilise (debounce / jitter-smooth) using resolved pad
-    final stable = _stabilizer.process(raw, normalizedPad, expectsGhost);
-    if (stable == null) return;
+    // ── Steps 2–3: On-screen pad taps bypass the stabilizer entirely.
+    //
+    // The AdaptiveMidiStabilizer is designed for physical e-drum pads that can
+    // mechanically bounce. A capacitive touch screen CANNOT bounce, so debounce
+    // is not only unnecessary but actively harmful — it drops legitimate
+    // simultaneous multi-touch chord hits that land within the debounce window.
+    //
+    // On-screen hits also have fixed velocity (100) so ghost-note filtering and
+    // EWA jitter smoothing are irrelevant.
+    final StabilizedEvent stable;
+    if (raw.inputSource == InputSourceType.onScreenPad) {
+      stable = StabilizedEvent(
+        originalEvent:  raw,
+        pad:            normalizedPad,
+        smoothedTimeMs: raw.timestampMicros / 1000.0,
+      );
+    } else {
+      // Physical kit: full stabilization pipeline.
+      final expectsGhost = AdaptiveMidiStabilizer.nextNoteIsGhost(
+        normalizedPad,
+        _pending,
+        _playUs / 1000.0,
+        bpm: _bpm,
+      );
+      final s = _stabilizer.process(raw, normalizedPad, expectsGhost);
+      if (s == null) return;
+      stable = s;
+    }
 
     // stable.pad is authoritative from here — may differ from normalizedPad
     // when hi-hat open/closed state overrides the initial resolution.
@@ -669,30 +711,35 @@ class PracticeEngine {
     SyncDiagnostics.instance.lastRawArrivalUs = raw.timestampMicros;
     SyncDiagnostics.instance.lastDeviceId = raw.deviceId;
 
-    // Use the jitter-smoothed timestamp consistently for both flam detection
-    // and matcher input — eliminates the native-vs-global time domain split.
+    // smoothedTimeMs is used only for flam/ghost detection (relative jitter).
+    // For matching we use the current clock minus _startRef — this is always
+    // song-relative regardless of stabilizer EWA drift or seek/restart changes
+    // to _startRef.
     final hitMs = stable.smoothedTimeMs;
-    final hitUs = _clock.nativeToGlobal((hitMs * 1000).round());
 
     _recentHits.add(RecentHit(pad: pad, timestampMs: hitMs));
     if (_recentHits.length > 8) _recentHits.removeAt(0);
 
     if (_matcher.isFlamGhost(hitMs, pad)) return;
 
+    // Song-relative µs: identical to _playUs at this instant.
+    final hitTimestampSongUs = _clock.currentTimeMicros() - _startRef;
+
     final result = _matcher.match(
-      hitTimestampUs: hitUs,
+      hitTimestampUs: hitTimestampSongUs,
       hitPad: pad,
       hitVelocity: raw.velocity,
       pendingNotes: _pending,
       playheadMs: _playUs / 1000.0,
     );
 
-    _processMatchResult(result, raw, source: raw.inputSource);
+    _processMatchResult(result, raw, hitPad: pad, source: raw.inputSource);
   }
 
   void _processMatchResult(
     MatchResult m,
     MidiEvent raw, {
+    DrumPad? hitPad,
     InputSourceType source = InputSourceType.connectedDrum,
   }) {
     late HitResult hit;
@@ -700,12 +747,9 @@ class PracticeEngine {
     if (m.isExtra) {
       _lastGaussian = 0;
 
+      // Use the already-resolved pad for the dummy event; fall back to snare.
       final dummy = NoteEvent(
-        pad: m.hitVelocity > 0
-            ? (raw.note >= 35 && raw.note <= 36
-                ? DrumPad.kick
-                : DrumPad.snare)
-            : DrumPad.snare,
+        pad: hitPad ?? DrumPad.snare,
         midiNote: raw.note,
         beatPosition: 0,
         timeSeconds: _playUs / 1e6,
@@ -720,6 +764,7 @@ class PracticeEngine {
         correctPad: false,
         score: 0,
         inputSource: source,
+        hitPad: hitPad,
       );
     } else {
       final grade = _mapGrade(m.grade);
@@ -733,6 +778,7 @@ class PracticeEngine {
         correctPad: m.padMatch,
         score: scoreVal,
         inputSource: source,
+        hitPad: hitPad,
       );
 
       if (m.padMatch && grade != HitGrade.miss) {
@@ -860,11 +906,21 @@ class PracticeEngine {
     _broadcast();
   }
 
+  /// XP score multiplier based on combo streak.
+  /// 0–9 hits → ×1, 10–24 → ×2, 25–49 → ×4, 50+ → ×8
   int get _multiplier {
-    if (_combo >= 40) return 4;
-    if (_combo >= 20) return 3;
+    if (_combo >= 50) return 8;
+    if (_combo >= 25) return 4;
     if (_combo >= 10) return 2;
     return 1;
+  }
+
+  /// Combo tier: 0 = ×1, 1 = ×2, 2 = ×4, 3 = ×8
+  static int comboTier(int combo) {
+    if (combo >= 50) return 3;
+    if (combo >= 25) return 2;
+    if (combo >= 10) return 1;
+    return 0;
   }
 
   void _broadcast() {
@@ -885,6 +941,7 @@ class PracticeEngine {
         missCount: _miss,
         gaussianScore: _lastGaussian,
         lastInputSource: _lastSource,
+        comboTier: PracticeEngine.comboTier(_combo),
       ),
     );
   }

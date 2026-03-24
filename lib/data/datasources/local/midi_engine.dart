@@ -120,14 +120,18 @@ class MidiEngine {
 
   // ── Parsing ────────────────────────────────────────────────────────────────
   MidiEvent _parseMidiEvent(Map raw) {
-    final typeInt = raw['type'] as int;
+    // Use null-safe casts so that BT devices sending integers as a different
+    // numeric type (e.g. long/double from native) don't silently drop events.
+    int _i(Object? v) => (v is int) ? v : (v is num ? v.toInt() : 0);
+
+    final typeInt = _i(raw['type']);
     return MidiEvent(
-      type: _parseMidiEventType(typeInt),
-      channel: raw['channel'] as int,
-      note: raw['note'] as int,
-      velocity: raw['velocity'] as int,
-      timestampMicros: raw['timestampMicros'] as int,
-      deviceId: raw['deviceId'] as String?,
+      type:            _parseMidiEventType(typeInt),
+      channel:         _i(raw['channel']),
+      note:            _i(raw['note']),
+      velocity:        _i(raw['velocity']),
+      timestampMicros: _i(raw['timestampMicros']),
+      deviceId:        raw['deviceId'] as String?,
     );
   }
 

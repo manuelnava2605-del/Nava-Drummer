@@ -42,6 +42,22 @@ class SheetLayoutEngine {
   double _noteY(double staffLine, double staffTop, double lineSpacing) =>
       staffTop + (4.0 - staffLine) * lineSpacing;
 
+  // ── Note value from gap + BPM ─────────────────────────────────────────────
+
+  /// Convert a time gap (seconds) to the nearest standard note value.
+  /// Uses mid-point thresholds between consecutive standard values.
+  static NoteValueType noteValueFromGap(double gapSeconds, double bpm) {
+    if (bpm <= 0) return NoteValueType.eighth;
+    final beats = gapSeconds * bpm / 60.0;
+    if (beats >= 3.0)   return NoteValueType.whole;
+    if (beats >= 1.5)   return NoteValueType.half;
+    if (beats >= 0.75)  return NoteValueType.quarter;
+    if (beats >= 0.375) return NoteValueType.eighth;
+    if (beats >= 0.1875) return NoteValueType.sixteenth;
+    if (beats >= 0.09375) return NoteValueType.thirtySecond;
+    return NoteValueType.sixtyFourth;
+  }
+
   // ── Main layout ───────────────────────────────────────────────────────────
 
   SheetRenderModel layout({
@@ -73,13 +89,56 @@ class SheetLayoutEngine {
     for (int i = lo; i < notes.length; i++) {
       final n = notes[i];
       if (n.timeSeconds > maxTime) break;
-      final x = _noteX(n.timeSeconds, currentTime, playheadX);
-      final y = _noteY(n.staffLine,   staffTop,    lineSpacing);
-      // A note is "highlighted" if this pad was recently hit AND
-      // the note is within a generous ±200 ms window around the playhead.
+      final x         = _noteX(n.timeSeconds, currentTime, playheadX);
+      final y         = _noteY(n.staffLine,   staffTop,    lineSpacing);
       final highlighted = recentlyHit.contains(n.pad) &&
           (n.timeSeconds - currentTime).abs() < 0.20;
-      laidOut.add(LaidOutNote(note: n, x: x, y: y, highlighted: highlighted));
+      final noteValue = noteValueFromGap(n.gapToNextSeconds, bpm);
+      laidOut.add(LaidOutNote(
+        note:        n,
+        x:           x,
+        y:           y,
+        highlighted: highlighted,
+        noteValue:   noteValue,
+      ));
+    }
+
+    // ── Chord groups (notes within 6 ms of each other) ───────────────────
+    const chordEpsilon = 0.006; // seconds
+    final chordGroups = <List<int>>[];
+    {
+      int start = 0;
+      while (start < laidOut.length) {
+        final t0  = laidOut[start].note.timeSeconds;
+        int   end = start + 1;
+        while (end < laidOut.length &&
+               laidOut[end].note.timeSeconds - t0 <= chordEpsilon) {
+          end++;
+        }
+        if (end - start >= 2) {
+          chordGroups.add(List.generate(end - start, (k) => start + k));
+        }
+        start = end;
+      }
+    }
+
+    // ── Beam groups (up-stem eighth/16th notes in the same beat) ──────────
+    // Only beam notes that have noteValue ≤ eighth (i.e. flagCount ≥ 1).
+    final beamGroups = <List<int>>[];
+    if (secPerBeat > 0) {
+      final beatMap = <int, List<int>>{};
+      for (int k = 0; k < laidOut.length; k++) {
+        final n = laidOut[k];
+        if (!n.note.stemUp) continue;
+        if (n.noteValue.flagCount < 1) continue; // only beam eighth notes and shorter
+        final beatIdx = (n.note.timeSeconds / secPerBeat).floor();
+        beatMap.putIfAbsent(beatIdx, () => []).add(k);
+      }
+      final sortedKeys = beatMap.keys.toList()..sort();
+      for (final key in sortedKeys) {
+        final group = beatMap[key]!;
+        if (group.length >= 2) beamGroups.add(group);
+      }
     }
 
     // ── Bar lines ─────────────────────────────────────────────────────────
@@ -113,13 +172,17 @@ class SheetLayoutEngine {
         : 1;
 
     return SheetRenderModel(
-      notes:       laidOut,
-      playheadX:   playheadX,
-      staffTop:    staffTop,
-      lineSpacing: lineSpacing,
-      barLineXs:   barLineXs,
-      beatLineXs:  beatLineXs,
-      currentBar:  currentBar,
+      notes:              laidOut,
+      playheadX:          playheadX,
+      staffTop:           staffTop,
+      lineSpacing:        lineSpacing,
+      barLineXs:          barLineXs,
+      beatLineXs:         beatLineXs,
+      currentBar:         currentBar,
+      timeSigNumerator:   beatsPerBar,
+      timeSigDenominator: 4,
+      chordGroups:        chordGroups,
+      beamGroups:         beamGroups,
     );
   }
 }

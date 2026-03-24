@@ -34,7 +34,8 @@ import 'l10n/strings.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await WakelockPlus.enable();
+  try { await WakelockPlus.enable(); }
+  catch (e) { debugPrint('[main] WakelockPlus: $e'); }
 
   // Portrait only. PracticeScreen forces landscape temporarily.
   await SystemChrome.setPreferredOrientations([
@@ -49,26 +50,52 @@ void main() async {
     debugPrintStack(stackTrace: st);
   }
 
-  await LocaleController.instance.init();
-  await SubscriptionService.instance.init();
-  await AudioService.instance.init();
-  await NotificationService.instance.init();
+  // ── Fast path: only blocking inits that must precede runApp ─────────────────
+  // LocaleController and calibration offset are lightweight (SharedPrefs only).
+  try { await LocaleController.instance.init(); }
+  catch (e) { debugPrint('[main] LocaleController: $e'); }
 
-  // Apply saved latency calibration offset to the global timing controller
-  final savedOffsetMs = await CalibrationRepository.loadOffset();
-  if (savedOffsetMs != 0) {
-    GlobalTimingController.instance.applySyncOffset(savedOffsetMs * 1000);
-  }
+  // Apply saved latency calibration offset to the global timing controller.
+  try {
+    final savedOffsetMs = await CalibrationRepository.loadOffset();
+    if (savedOffsetMs != 0) {
+      GlobalTimingController.instance.applySyncOffset(savedOffsetMs * 1000);
+    }
+  } catch (e) { debugPrint('[main] CalibrationRepository: $e'); }
+
   ConnectivityService.instance.init();
 
   final sl = ServiceLocator();
-  await sl.initialize();
+  try { await sl.initialize(); }
+  catch (e) { debugPrint('[main] ServiceLocator: $e'); }
 
+  // ── Run app immediately — heavy inits happen in background ──────────────────
+  // SubscriptionService, AudioService (soundpool + 200+ WAV loads) and
+  // NotificationService (FCM permission prompt) are all deferred so they cannot
+  // block the first frame.  DrumEngine guards every hit with `if (!_ready)`.
   runApp(
     AppErrorBoundary(
       child: AppProviders(sl: sl, child: NavaDrummerApp(sl: sl)),
     ),
   );
+
+  // ── Deferred heavy inits (run after first frame is visible) ─────────────────
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    try {
+      await SubscriptionService.instance.init()
+          .timeout(const Duration(seconds: 10));
+    } catch (e) { debugPrint('[main] SubscriptionService: $e'); }
+
+    try {
+      await AudioService.instance.init()
+          .timeout(const Duration(seconds: 15));
+    } catch (e) { debugPrint('[main] AudioService: $e'); }
+
+    try {
+      await NotificationService.instance.init()
+          .timeout(const Duration(seconds: 8));
+    } catch (e) { debugPrint('[main] NotificationService: $e'); }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +133,7 @@ class _AppRoot extends StatefulWidget {
   State<_AppRoot> createState() => _AppRootState();
 }
 
-class _AppRootState extends State<_AppRoot> {
+class _AppRootState extends State<_AppRoot> with WidgetsBindingObserver {
   // ── Pref keys ──────────────────────────────────────────────────────────────
   static const _kOnboarded   = 'onboarding_done_v3';
   static const _kDeviceSetup = 'device_setup_done_v2';
@@ -145,37 +172,68 @@ class _AppRootState extends State<_AppRoot> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _init();
   }
 
-  Future<void> _init() async {
-    final prefs       = await SharedPreferences.getInstance();
-    final rememberMe  = prefs.getBool(_kRememberMe) ?? false;
-    final currentUser = FirebaseAuth.instance.currentUser;
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
 
-    // If the user is logged in but hasn't checked "remember me", sign them out
-    // and require fresh login on every app open.
-    if (currentUser != null && !rememberMe) {
-      await FirebaseAuth.instance.signOut();
-    }
-
-    final freshUser = FirebaseAuth.instance.currentUser;
-
-    setState(() {
-      _onboarded  = prefs.getBool(_kOnboarded)   ?? false;
-      _deviceDone = prefs.getBool(_kDeviceSetup) ?? false;
-      _showBanner = !_onboarded;
-      _authDone   = freshUser != null;
-      _loading    = false;
-    });
-
-    // Load real progress if user is already authenticated
-    if (freshUser != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        context.read<ProgressBloc>().add(ProgressLoadRequested(freshUser.uid));
-        SubscriptionService.instance.setUserId(freshUser.uid);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-enable wakelock when the app returns to foreground.
+    // The drum practice experience requires the screen to stay on at all times.
+    if (state == AppLifecycleState.resumed) {
+      WakelockPlus.enable().catchError((e) {
+        debugPrint('[AppRoot] WakelockPlus resume: $e');
       });
+    }
+  }
+
+  Future<void> _init() async {
+    try {
+      final prefs      = await SharedPreferences.getInstance();
+      final rememberMe = prefs.getBool(_kRememberMe) ?? false;
+      final currentUser = FirebaseAuth.instance.currentUser;
+
+      // If the user is logged in but hasn't checked "remember me", sign them
+      // out on every fresh launch.  Timeout after 5 s so a bad network can't
+      // block the app forever.
+      if (currentUser != null && !rememberMe) {
+        try {
+          await FirebaseAuth.instance.signOut()
+              .timeout(const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint('[AppRoot] signOut error/timeout: $e');
+        }
+      }
+
+      final freshUser = FirebaseAuth.instance.currentUser;
+
+      if (!mounted) return;
+      setState(() {
+        _onboarded  = prefs.getBool(_kOnboarded)   ?? false;
+        _deviceDone = prefs.getBool(_kDeviceSetup) ?? false;
+        _showBanner = !_onboarded;
+        _authDone   = freshUser != null;
+        _loading    = false;
+      });
+
+      // Load real progress if user is already authenticated.
+      if (freshUser != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          context.read<ProgressBloc>().add(ProgressLoadRequested(freshUser.uid));
+          SubscriptionService.instance.setUserId(freshUser.uid);
+        });
+      }
+    } catch (e) {
+      debugPrint('[AppRoot] _init error: $e');
+      // Always unblock the UI even if init partially failed.
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -191,6 +249,9 @@ class _AppRootState extends State<_AppRoot> {
   Future<void> _completeDeviceSetup(MidiDevice? d, DrumMapping? m) async {
     final p = await SharedPreferences.getInstance();
     await p.setBool(_kDeviceSetup, true);
+    // Apply the physical kit's note mapping to the practice engine so incoming
+    // MIDI notes resolve correctly regardless of the song's built-in map.
+    if (m != null) sl.practiceEngine.setDeviceMapping(m);
     setState(() {
       _connectedDevice = d;
       _drumMapping     = m;
@@ -283,10 +344,13 @@ class _AppRootState extends State<_AppRoot> {
             SettingsScreen(
               midiEngine:      sl.midiEngine,
               onLogout:        _onLogout,
-              onDeviceSelected: (d, m) => setState(() {
-                _connectedDevice = d;
-                _drumMapping     = m;
-              }),
+              onDeviceSelected: (d, m) {
+                if (m != null) sl.practiceEngine.setDeviceMapping(m);
+                setState(() {
+                  _connectedDevice = d;
+                  _drumMapping     = m;
+                });
+              },
             ),
           ],
         ),
@@ -322,7 +386,7 @@ class _AppRootState extends State<_AppRoot> {
           color: NavaTheme.surface,
           border: Border(
             top: BorderSide(
-              color: NavaTheme.neonCyan.withOpacity(0.1),
+              color: NavaTheme.neonCyan.withValues(alpha: 0.1),
             ),
           ),
         ),

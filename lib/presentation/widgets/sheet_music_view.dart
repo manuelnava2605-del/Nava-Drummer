@@ -148,11 +148,11 @@ class _SheetMusicViewState extends State<SheetMusicView> {
       final h  = constraints.maxHeight;
       final w  = constraints.maxWidth;
 
-      // Staff geometry
-      const ls           = 11.0;  // line spacing in pixels
-      const staffH       = ls * 4; // 44 px
-      const reserveAbove = 85.0;   // room for crash/hi-hat ledger lines
-      const reserveBelow = 55.0;   // room for kick ledger line
+      // Staff geometry — larger staff for better readability on screen
+      const ls           = 24.0;  // line spacing in pixels (was 17, now larger)
+      const staffH       = ls * 4; // 96 px
+      const reserveAbove = 160.0;  // room for crash/hi-hat ledger lines
+      const reserveBelow = 110.0;  // room for kick ledger line
 
       // Center the staff block vertically
       final staffTop = (h - staffH - reserveAbove - reserveBelow) / 2
@@ -195,15 +195,17 @@ class _SheetMusicViewState extends State<SheetMusicView> {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
       child: Row(
         children: _padDefs.map((def) => Expanded(
-          child: GestureDetector(
-            onTapDown: (_) => widget.onPadTap!(def.pad),
+          // Listener bypasses gesture arena → true multi-touch (chord) support
+          child: Listener(
+            onPointerDown: (_) => widget.onPadTap!(def.pad),
+            behavior: HitTestBehavior.opaque,
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 3),
               height: 46,
               decoration: BoxDecoration(
-                color: def.color.withOpacity(0.10),
+                color: def.color.withValues(alpha: 0.10),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: def.color.withOpacity(0.50), width: 1.4),
+                border: Border.all(color: def.color.withValues(alpha: 0.50), width: 1.4),
               ),
               child: Center(child: Text(
                 def.label,

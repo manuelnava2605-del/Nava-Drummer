@@ -42,7 +42,9 @@ class _ModeSelectorSheetState extends State<ModeSelectorSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final maxH = MediaQuery.of(context).size.height * 0.88;
+    final mq   = MediaQuery.of(context);
+    final isLandscape = mq.size.width > mq.size.height;
+    final maxH = mq.size.height * (isLandscape ? 0.96 : 0.88);
     return Container(
       constraints: BoxConstraints(maxHeight: maxH),
       decoration: const BoxDecoration(
@@ -51,13 +53,13 @@ class _ModeSelectorSheetState extends State<ModeSelectorSheet> {
       ),
       child: SingleChildScrollView(
         padding: EdgeInsets.fromLTRB(
-            24, 16, 24, MediaQuery.of(context).padding.bottom + 24),
+            24, isLandscape ? 10 : 16, 24, mq.padding.bottom + (isLandscape ? 12 : 24)),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
 
         // Handle
         Container(
           width: 40, height: 4,
-          margin: const EdgeInsets.only(bottom: 20),
+          margin: EdgeInsets.only(bottom: isLandscape ? 12 : 20),
           decoration: BoxDecoration(
             color:        NavaTheme.textMuted.withOpacity(0.4),
             borderRadius: BorderRadius.circular(2)),
@@ -89,14 +91,14 @@ class _ModeSelectorSheetState extends State<ModeSelectorSheet> {
           _Tag('${widget.song.bpm} BPM', NavaTheme.neonGold),
         ]),
 
-        const SizedBox(height: 24),
+        SizedBox(height: isLandscape ? 12 : 24),
         const Align(
           alignment: Alignment.centerLeft,
           child: Text('ELIGE EL MODO', style: TextStyle(
               fontFamily: 'DrummerBody', fontSize: 10,
               color:      NavaTheme.textMuted, letterSpacing: 2)),
         ),
-        const SizedBox(height: 12),
+        SizedBox(height: isLandscape ? 8 : 12),
 
         // Mode cards
         Row(children: [
@@ -129,7 +131,7 @@ class _ModeSelectorSheetState extends State<ModeSelectorSheet> {
           )),
         ]).animate().fadeIn(delay: 100.ms).slideY(begin: 0.1),
 
-        const SizedBox(height: 20),
+        SizedBox(height: isLandscape ? 10 : 20),
 
         // Info row (difficulty, tempo, xp)
         Container(
@@ -156,7 +158,7 @@ class _ModeSelectorSheetState extends State<ModeSelectorSheet> {
           ),
         ),
 
-        const SizedBox(height: 20),
+        SizedBox(height: isLandscape ? 10 : 20),
 
         // Start button
         SizedBox(
@@ -273,7 +275,10 @@ class _ModeCard extends StatelessWidget {
           ),
           boxShadow: selected ? NavaTheme.cyanGlow : null,
         ),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
 
           // Badge
           Container(
@@ -288,11 +293,11 @@ class _ModeCard extends StatelessWidget {
                 color: badgeColor, letterSpacing: 1)),
           ),
 
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           // Emoji
-          Text(emoji, style: const TextStyle(fontSize: 28)),
-          const SizedBox(height: 6),
+          Text(emoji, style: const TextStyle(fontSize: 22)),
+          const SizedBox(height: 4),
 
           // Title
           Text(title, style: TextStyle(
@@ -300,14 +305,14 @@ class _ModeCard extends StatelessWidget {
               color: selected ? NavaTheme.neonCyan : NavaTheme.textPrimary,
               fontWeight:  FontWeight.bold, letterSpacing: 1)),
 
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
 
           // Subtitle
           Text(subtitle, style: const TextStyle(
               fontFamily: 'DrummerBody', fontSize: 10,
-              color: NavaTheme.textSecondary, height: 1.4)),
+              color: NavaTheme.textSecondary, height: 1.3)),
 
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           // Feature list
           ...features.map((f) => Padding(

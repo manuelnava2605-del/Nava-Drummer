@@ -126,31 +126,40 @@ class DrumNotationMapper {
   // ── Public API ───────────────────────────────────────────────────────────
 
   /// Convert a single NoteEvent to a NotationNote.
-  /// Returns null only if the pad has no notation mapping (should never happen).
-  static NotationNote? fromEvent(NoteEvent event) {
+  /// [gapToNext] is the time in seconds to the next note in the chart (for
+  /// computing rhythmic note value). Defaults to 1.0 (quarter note at 60 BPM).
+  static NotationNote? fromEvent(NoteEvent event, {double gapToNext = 1.0}) {
     final info = _map[event.pad];
     if (info == null) return null;
     return NotationNote(
-      source:      event,
-      pad:         event.pad,
-      timeSeconds: event.timeSeconds,
-      staffLine:   info.staffLine,
-      headType:    info.headType,
-      stemUp:      info.stemUp,
-      openHihat:   info.openHihat,
-      color:       _resolveColor(info.colorFamily),
+      source:           event,
+      pad:              event.pad,
+      timeSeconds:      event.timeSeconds,
+      staffLine:        info.staffLine,
+      headType:         info.headType,
+      stemUp:           info.stemUp,
+      openHihat:        info.openHihat,
+      color:            _resolveColor(info.colorFamily),
+      gapToNextSeconds: gapToNext,
     );
   }
 
   /// Convert an entire chart of NoteEvents to notation notes in time order.
-  /// This is called once at song load — O(n log n), not per-frame.
+  /// Gap-to-next is computed here so SheetLayoutEngine can derive note values.
+  /// Called once at song load — O(n log n), not per-frame.
   static List<NotationNote> fromChart(List<NoteEvent> events) {
+    if (events.isEmpty) return [];
+    final sorted = List<NoteEvent>.from(events)
+      ..sort((a, b) => a.timeSeconds.compareTo(b.timeSeconds));
+
     final result = <NotationNote>[];
-    for (final e in events) {
-      final n = fromEvent(e);
+    for (int i = 0; i < sorted.length; i++) {
+      final gap = (i + 1 < sorted.length)
+          ? (sorted[i + 1].timeSeconds - sorted[i].timeSeconds).clamp(0.01, 8.0)
+          : 1.0; // default: assume 1 second gap for last note
+      final n = fromEvent(sorted[i], gapToNext: gap.toDouble());
       if (n != null) result.add(n);
     }
-    result.sort((a, b) => a.timeSeconds.compareTo(b.timeSeconds));
     return result;
   }
 }

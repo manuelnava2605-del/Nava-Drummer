@@ -116,13 +116,13 @@ class _PadButtonState extends State<_PadButton>
   @override
   void dispose() { _ctrl.dispose(); super.dispose(); }
 
-  void _onTapDown(TapDownDetails _) {
+  void _onPointerDown(PointerDownEvent _) {
     _ctrl.forward(from: 0);
     widget.engine.onScreenHit(widget.pad, velocity: 100);
   }
 
-  void _onTapUp(TapUpDetails _)       => _ctrl.reverse();
-  void _onTapCancel()                  => _ctrl.reverse();
+  void _onPointerUp(PointerUpEvent _)         => _ctrl.reverse();
+  void _onPointerCancel(PointerCancelEvent _) => _ctrl.reverse();
 
   @override
   Widget build(BuildContext context) {
@@ -130,10 +130,13 @@ class _PadButtonState extends State<_PadButton>
     final height   = widget.small ? 38.0 : 48.0;
     final fontSize = widget.small ? 8.0  : 10.0;
 
-    return GestureDetector(
-      onTapDown:   _onTapDown,
-      onTapUp:     _onTapUp,
-      onTapCancel: _onTapCancel,
+    // Listener instead of GestureDetector: bypasses the gesture arena so that
+    // multiple pads can fire simultaneously (true multi-touch chord support).
+    return Listener(
+      onPointerDown:   _onPointerDown,
+      onPointerUp:     _onPointerUp,
+      onPointerCancel: _onPointerCancel,
+      behavior:        HitTestBehavior.opaque,
       child: ScaleTransition(
         scale: _scale,
         child: Container(

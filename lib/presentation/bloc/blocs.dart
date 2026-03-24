@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../domain/entities/entities.dart';
 import '../../domain/usecases/usecases.dart';
@@ -188,22 +189,72 @@ class ProgressBloc extends Bloc<ProgressEvent, ProgressState> {
   ) async {
     final currentState = state;
 
-    try {
-      final updatedProgress = await _saveSession(event.session, event.userId);
-      final suggestions     = _getCoach(event.session);
+    // ── Step 1: Optimistic local update ──────────────────────────────────────
+    // Immediately reflect the new session and XP in the UI without waiting for
+    // Firestore. This keeps the dashboard responsive even on slow networks.
+    if (currentState is ProgressLoaded) {
+      final session = event.session;
+      final prev    = currentState.progress;
 
-      if (currentState is ProgressLoaded) {
-        emit(currentState.copyWith(
-          progress:       updatedProgress,
-          lastSuggestions: suggestions,
-        ));
-      } else {
-        // Reload fully
-        add(ProgressLoadRequested(event.userId));
-      }
-    } catch (_) {
-      // Non-critical — don't interrupt user flow
+      // Compute updated XP and level locally using the same thresholds as the
+      // domain entity so the progress bar advances right away.
+      final newXp    = prev.totalXp + session.xpEarned;
+      final newLevel = _calcLevelLocal(newXp);
+      final newBest  = Map<String, int>.from(prev.songBestScores);
+      final existing = newBest[session.song.id] ?? 0;
+      if (session.totalScore > existing) newBest[session.song.id] = session.totalScore;
+
+      final optimisticProgress = prev.copyWith(
+        totalXp:       newXp,
+        level:         newLevel,
+        songBestScores: newBest,
+      );
+
+      final updatedSessions = [session, ...currentState.recentSessions]
+          .take(10)
+          .toList();
+
+      emit(currentState.copyWith(
+        progress:        optimisticProgress,
+        recentSessions:  updatedSessions,
+        lastSuggestions: _getCoach(session),
+      ));
     }
+
+    // ── Step 2: Persist to Firestore and sync final server values ─────────────
+    try {
+      final serverProgress = await _saveSession(event.session, event.userId);
+      final freshSessions  = await _getRecent(event.userId, limit: 10);
+
+      // Use server XP/level as ground truth; preserve displayName from optimistic state.
+      final stateAfterSave = state;
+      if (stateAfterSave is ProgressLoaded) {
+        emit(stateAfterSave.copyWith(
+          progress: serverProgress.copyWith(
+            displayName: stateAfterSave.progress.displayName,
+          ),
+          recentSessions: freshSessions,
+        ));
+      }
+    } catch (e) {
+      // Firestore save failed — optimistic update is still displayed.
+      // Log the error for diagnostics; do not block the user flow.
+      debugPrint('[ProgressBloc] Session save error: $e');
+    }
+  }
+
+  /// Mirrors UserRepositoryImpl._calculateLevel so the optimistic update uses
+  /// the same formula as the backend.
+  static int _calcLevelLocal(int totalXp) {
+    int level = 1;
+    int threshold = 500;
+    int xpLeft = totalXp;
+    while (xpLeft >= threshold) {
+      xpLeft    -= threshold;
+      level++;
+      threshold  = (threshold * 1.5).toInt();
+    }
+    return level;
   }
 
   UserProgress _defaultProgress(String userId) => UserProgress(

@@ -89,13 +89,21 @@ class DrumMapping extends Equatable {
 
 class StandardDrumMaps {
   static const Map<int, DrumPad> generalMidi = {
+    // ── Kick ──────────────────────────────────────────────────────────────────
     35: DrumPad.kick,        36: DrumPad.kick,
+    // ── Snare ─────────────────────────────────────────────────────────────────
     38: DrumPad.snare,       40: DrumPad.snare,
     37: DrumPad.crossstick,
+    // ── Hi-Hat ────────────────────────────────────────────────────────────────
     42: DrumPad.hihatClosed, 44: DrumPad.hihatPedal, 46: DrumPad.hihatOpen,
-    49: DrumPad.crash1,      55: DrumPad.crash2,
-    51: DrumPad.ride,        53: DrumPad.rideBell,
-    48: DrumPad.tom1,        47: DrumPad.tom2, 45: DrumPad.tom2,
+    // ── Crashes ───────────────────────────────────────────────────────────────
+    49: DrumPad.crash1,      55: DrumPad.crash2,      57: DrumPad.crash2,
+    // ── Ride ──────────────────────────────────────────────────────────────────
+    51: DrumPad.ride,        53: DrumPad.rideBell,    59: DrumPad.ride,
+    // ── Toms (50=High Tom, 48=Hi-Mid, 47=Low-Mid, 45=Low) ────────────────────
+    50: DrumPad.tom1,        48: DrumPad.tom1,
+    47: DrumPad.tom2,        45: DrumPad.tom2,
+    // ── Floor Tom ─────────────────────────────────────────────────────────────
     43: DrumPad.floorTom,    41: DrumPad.floorTom,
   };
 
@@ -114,37 +122,6 @@ class StandardDrumMaps {
     42: DrumPad.hihatClosed, 44: DrumPad.hihatPedal, 46: DrumPad.hihatOpen,
     49: DrumPad.crash1, 51: DrumPad.ride,
     50: DrumPad.tom1,  48: DrumPad.tom2, 47: DrumPad.tom3, 43: DrumPad.floorTom,
-  };
-
-  // ── Clone Hero / Rock Band Network (RBN) Expert drum format ──────────────
-  // Track: "PART DRUMS"
-  // Notes are on MIDI channel 0 (not channel 9).
-  // Expert difficulty note range: 95–100.
-  // Pro cymbal markers: 110 (yellow), 111 (blue), 112 (green) — ignored here
-  // (they co-occur with the base note and add cymbal/tom distinction; the
-  //  base notes carry the musical timing and are sufficient for gameplay).
-  static const Map<int, DrumPad> cloneHeroExpert = {
-    95:  DrumPad.kick,         // Kick pedal 1
-    96:  DrumPad.snare,        // Red (snare)
-    97:  DrumPad.hihatClosed,  // Yellow (hi-hat by default; tom if no pro flag)
-    98:  DrumPad.tom2,         // Blue (tom; ride cymbal if pro flag 111)
-    99:  DrumPad.kick,         // Kick pedal 2 (double bass pedal)
-    100: DrumPad.crash1,       // Green (crash cymbal; floor tom if no pro flag)
-    // Pro cymbal markers — co-occur at same tick as base notes.
-    // Map them to avoid "unmapped note" misses but deduplicate in loader.
-    110: DrumPad.hihatClosed,  // Yellow cymbal marker
-    111: DrumPad.ride,         // Blue cymbal marker
-    112: DrumPad.crash1,       // Green cymbal marker
-  };
-
-  // Clone Hero Easy drum format — note range 60–64.
-  // Used when diff_drums is rated but diff_drums_real is -1 (no pro drums).
-  static const Map<int, DrumPad> cloneHeroEasy = {
-    60: DrumPad.kick,
-    61: DrumPad.snare,
-    62: DrumPad.hihatClosed,
-    63: DrumPad.tom2,
-    64: DrumPad.crash1,
   };
 
   static Map<int, DrumPad> forBrand(DrumKitBrand brand) {
@@ -363,6 +340,8 @@ class HitResult extends Equatable {
   final bool           correctPad;
   final int            score;
   final InputSourceType inputSource;
+  /// The actual pad the user hit (may differ from [expected].pad on wrong-pad hits).
+  final DrumPad?       hitPad;
 
   const HitResult({
     required this.expected,
@@ -372,6 +351,7 @@ class HitResult extends Equatable {
     required this.correctPad,
     required this.score,
     this.inputSource = InputSourceType.connectedDrum,
+    this.hitPad,
   });
 
   NoteEvent get expectedNote => expected;
@@ -495,6 +475,27 @@ class UserProgress extends Equatable {
   int    get xpForNextLevel    => _thresholds[level] ?? (level * 1200);
   int    get xpInCurrentLevel  => totalXp - (_thresholds[(level-1).clamp(1,10)] ?? 0);
   double get levelProgress     => (xpInCurrentLevel / xpForNextLevel).clamp(0.0, 1.0);
+
+  UserProgress copyWith({
+    String?           displayName,
+    int?              totalXp,
+    int?              level,
+    int?              currentStreak,
+    int?              maxStreak,
+    Map<String, int>? songBestScores,
+    List<String>?     achievements,
+    DateTime?         lastPracticeDate,
+  }) => UserProgress(
+    userId:           userId,
+    displayName:      displayName      ?? this.displayName,
+    totalXp:          totalXp          ?? this.totalXp,
+    level:            level            ?? this.level,
+    currentStreak:    currentStreak    ?? this.currentStreak,
+    maxStreak:        maxStreak        ?? this.maxStreak,
+    songBestScores:   songBestScores   ?? this.songBestScores,
+    achievements:     achievements     ?? this.achievements,
+    lastPracticeDate: lastPracticeDate ?? this.lastPracticeDate,
+  );
 
   @override List<Object?> get props => [userId, totalXp, level, currentStreak];
 }
